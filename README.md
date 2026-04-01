@@ -131,7 +131,7 @@ Hier üblicherweise **nur USB-Upload** (Board *NodeMCU*, Port wählen, Hochladen
 
 #### 6. Automatischer Build mit GitHub Actions
 
-Im Repository liegt **[`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml)**. Bei **Push** auf `main`, **Pull Requests** und manuell (**Actions → „Firmware bauen“ → Run workflow**) werden mit **arduino-cli** die Sketches **`timer_esp32`** (ESP32 Dev Module, `PartitionScheme=default`, 4 M) und **`timer`** (NodeMCU) kompiliert.
+Im Repository liegt **[`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml)**. Bei **Push** auf `main`, **Pull Requests** und manuell (**Actions → „Firmware bauen“ → Run workflow**) werden mit **arduino-cli** die Sketches **`timer_esp32`** (FQBN `esp32:esp32:esp32`) und **`timer`** (NodeMCU) kompiliert.
 
 - **Artefakte:** Unter **Actions** den Lauf öffnen → **Artifacts** → `firmware-esp32` bzw. `firmware-esp8266` herunterladen (ZIP mit **`.bin`**-Dateien).
 - **GitHub Release** läuft **nur bei einem Tag** `v*` (nicht bei jedem Push auf `main`). Normale Pushes erzeugen nur Artefakte — der Job „GitHub Release“ ist dann **Skipped**, das ist erwartet.
@@ -145,7 +145,7 @@ Im Repository liegt **[`.github/workflows/build-firmware.yml`](.github/workflows
 
 Lokal denselben Build testen: [Arduino CLI](https://arduino.github.io/arduino-cli/) installieren und die Kommandos aus der Workflow-Datei nachvollziehen.
 
-**Falls CI fehlschlägt:** ESP8266 steckt nicht im Standard-Index — die Workflow-Datei nutzt die offizielle **package-URL** der ESP8266-Community. ESP32 nutzt die **Espressif-URL**. Beim ESP32 baut die CI mit **Standard-FQBN** `esp32:esp32:esp32dev` (ohne manuelles Partitionsschema); lokal solltest du in der IDE ein **passendes** Partitionsschema wählen (siehe Abschnitt Software & Bibliotheken).
+**Falls CI fehlschlägt:** ESP8266 steckt nicht im Standard-Index — die Workflow-Datei nutzt die offizielle **package-URL** der ESP8266-Community. ESP32 nutzt die **Espressif-URL**. Die CI kompiliert mit **FQBN** `esp32:esp32:esp32` (Board *ESP32 Dev Module* im aktuellen Core; ältere Anleitungen nennen noch `…:esp32dev`). Lokal in der IDE **dieselbe** Board-Auswahl und ein **passendes** Partitionsschema wählen (siehe Abschnitt Software & Bibliotheken).
 
 ---
 
