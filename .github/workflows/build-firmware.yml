@@ -1,0 +1,158 @@
+# Firmware mit arduino-cli bauen. Artefakte: .bin für USB-Flash & Web-OTA.
+#
+# ESP32-FQBN: esp32dev, PartitionScheme=default, 4M — anpassen, wenn dein Erst-Flash
+# anderes Partitionsschema nutzt (sonst OTA riskant).
+#
+# Bei Push eines Tags v* (z. B. v1.0.0): zusätzlich GitHub Release mit den Binaries.
+
+name: Firmware bauen
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  esp32:
+    name: ESP32 (timer_esp32)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Verzeichnisse
+        run: |
+          arduino-cli config init
+          arduino-cli config set directories.user "$HOME/Arduino"
+          mkdir -p "$HOME/Arduino/libraries"
+
+      - name: Timer-Bibliothek (JChristensen, mit library.properties)
+        run: |
+          git clone --depth 1 https://github.com/JChristensen/Timer.git "$HOME/Arduino/libraries/Timer"
+          printf '%s\n' \
+            'name=Timer' \
+            'version=2.0.0' \
+            'author=Jack Christensen' \
+            'maintainer=Jack Christensen' \
+            'sentence=Event-driven timer' \
+            'paragraph=' \
+            'category=Timing' \
+            'url=https://github.com/JChristensen/Timer' \
+            'architectures=*' \
+            > "$HOME/Arduino/libraries/Timer/library.properties"
+
+      - name: Core ESP32 & Bibliotheken
+        run: |
+          arduino-cli core install esp32:esp32 \
+            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install \
+            "Adafruit SSD1306" \
+            "Adafruit GFX Library" \
+            "Adafruit BusIO" \
+            "PubSubClient"
+
+      - name: Kompilieren
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32dev:PartitionScheme=default,FlashSize=4M \
+            --output-dir firmware-esp32 \
+            timer_esp32
+
+      - name: Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32
+          path: firmware-esp32/*.bin
+          if-no-files-found: error
+
+  esp8266:
+    name: ESP8266 (timer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Verzeichnisse
+        run: |
+          arduino-cli config init
+          arduino-cli config set directories.user "$HOME/Arduino"
+          mkdir -p "$HOME/Arduino/libraries"
+
+      - name: Timer-Bibliothek
+        run: |
+          git clone --depth 1 https://github.com/JChristensen/Timer.git "$HOME/Arduino/libraries/Timer"
+          printf '%s\n' \
+            'name=Timer' \
+            'version=2.0.0' \
+            'author=Jack Christensen' \
+            'maintainer=Jack Christensen' \
+            'sentence=Event-driven timer' \
+            'paragraph=' \
+            'category=Timing' \
+            'url=https://github.com/JChristensen/Timer' \
+            'architectures=*' \
+            > "$HOME/Arduino/libraries/Timer/library.properties"
+
+      - name: Core ESP8266 & Bibliotheken
+        run: |
+          arduino-cli core install esp8266:esp8266
+          arduino-cli lib install \
+            "Adafruit SSD1306" \
+            "Adafruit GFX Library" \
+            "Adafruit BusIO"
+
+      - name: Kompilieren
+        run: |
+          arduino-cli compile \
+            --fqbn esp8266:esp8266:nodemcuv2 \
+            --output-dir firmware-esp8266 \
+            timer
+
+      - name: Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp8266
+          path: firmware-esp8266/*.bin
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [esp32, esp8266]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Artefakte laden
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-esp32
+          path: assets/esp32
+
+      - name: Artefakte laden (ESP8266)
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-esp8266
+          path: assets/esp8266
+
+      - name: Release erstellen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/esp32/*.bin
+            assets/esp8266/*.bin
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
