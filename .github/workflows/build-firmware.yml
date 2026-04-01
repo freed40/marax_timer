@@ -1,7 +1,7 @@
 # Firmware mit arduino-cli bauen. Artefakte: .bin für USB-Flash & Web-OTA.
 #
-# ESP32-FQBN: esp32dev, PartitionScheme=default, 4M — anpassen, wenn dein Erst-Flash
-# anderes Partitionsschema nutzt (sonst OTA riskant).
+# ESP32-FQBN: esp32dev (Core-Defaults inkl. Flash/Partition — für OTA lokales Schema
+#   angleichen). ESP8266: Board-Paket nur über zusätzliche package-URL (siehe unten).
 #
 # Bei Push eines Tags v* (z. B. v1.0.0): zusätzlich GitHub Release mit den Binaries.
 
@@ -52,6 +52,8 @@ jobs:
 
       - name: Core ESP32 & Bibliotheken
         run: |
+          arduino-cli core update-index \
+            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core install esp32:esp32 \
             --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli lib install \
@@ -63,7 +65,7 @@ jobs:
       - name: Kompilieren
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32dev:PartitionScheme=default,FlashSize=4M \
+            --fqbn esp32:esp32:esp32dev \
             --output-dir firmware-esp32 \
             timer_esp32
 
@@ -107,7 +109,10 @@ jobs:
 
       - name: Core ESP8266 & Bibliotheken
         run: |
-          arduino-cli core install esp8266:esp8266
+          arduino-cli core update-index \
+            --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          arduino-cli core install esp8266:esp8266 \
+            --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
           arduino-cli lib install \
             "Adafruit SSD1306" \
             "Adafruit GFX Library" \
