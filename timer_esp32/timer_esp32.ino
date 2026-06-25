@@ -29,8 +29,15 @@
 #define REED_PIN 18
 #define I2C_SDA 21
 #define I2C_SCL 22
+// SSD1306 I2C: die meisten 128x64-Module 0x3C, manche 0x3D — bei schwarzem Display wechseln.
+#define SSD1306_I2C_ADDR 0x3D
 #define MARAX_RX 14
 #define MARAX_TX 12
+
+// DevKit V1: Onboard-LED meist GPIO 2. FQBN esp32:esp32:esp32 setzt oft kein LED_BUILTIN.
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
 
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
@@ -714,14 +721,25 @@ static void applyMachineTelemetryFromLine() {
 void setup() {
   LittleFS.begin(true);
   loadWifiCredentials();
+
+  // Display vor WLAN: bei gespeichertem (falschem) WLAN blockiert tryConnectSta() bis zu 45 s —
+  // sonst bleibt der Schirm schwarz, obwohl nur das OLED zum Test angeschlossen ist.
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.begin(9600);
+  display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDR);
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println(F("MaraX-Timer"));
+  display.println(F("WLAN..."));
+  display.display();
+
   setupWifiAndServices();
   if (g_configPortalMode || WiFi.status() == WL_CONNECTED) {
     setupWebServer();
   }
 
-  Wire.begin(I2C_SDA, I2C_SCL);
-
-  Serial.begin(9600);
   MaraXSerial.begin(9600, SERIAL_8N1, MARAX_RX, MARAX_TX);
 
   pinMode(REED_PIN, INPUT_PULLUP);
@@ -734,7 +752,6 @@ void setup() {
 
   memset(receivedChars, 0, numChars);
 
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.display();
