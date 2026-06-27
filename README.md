@@ -24,7 +24,9 @@ Shot-Timer und Statusanzeige für die **Lelit Mara X** (z. B. PL62X) und ähnlic
 Der Timer kann auf zwei Arten ausgelöst werden — umschaltbar per Weboberfläche ohne erneutes Flashen:
 
 - **Reed-Sensor-Modus** (Standard): Ein Reed-Sensor am Pumpenkörper erkennt das Magnetfeld der laufenden Pumpe.
-- **Seriell-Modus**: Der Pumpenstatus wird direkt aus den UART-Daten der Mara X gelesen (Byte 25 im Frame `C1.06,116,124,093,0840,1,0`). Kein Reed-Sensor notwendig.
+- **Seriell-Modus**: Der Pumpenstatus wird direkt aus den UART-Daten der Mara X gelesen (letztes Frame-Feld). Kein Reed-Sensor notwendig.
+
+> ⚠️ **Firmware-abhängig!** Der Seriell-Modus funktioniert nur, wenn die Maschine das Pumpenfeld sendet. **fw 1.06** sendet es (7 Felder), **fw 1.23** sendet es **nicht** (nur 6 Felder) — dort ist ein Reed-Sensor zwingend. Details und Frame-Aufbau: [docs/MARAX_SERIAL_PROTOCOL.md](docs/MARAX_SERIAL_PROTOCOL.md).
 
 Shots unter 15 Sekunden (z. B. Boiler-Nachfüllen) werden nicht gespeichert. Nach 1 Stunde Inaktivität wechselt das Display in den Ruhezustand.
 
@@ -50,14 +52,14 @@ Shots unter 15 Sekunden (z. B. Boiler-Nachfüllen) werden nicht gespeichert. Nac
 | OLED | **GND** | **GND** | |
 | OLED | **SDA** | **GPIO 21** | I²C Daten |
 | OLED | **SCL** | **GPIO 22** | I²C Takt |
-| Mara X Pin 3 (RX) | — | **GPIO 12** | UART TX vom ESP |
-| Mara X Pin 4 (TX) | — | **GPIO 14** | UART RX zum ESP |
+| Mara X Pin 3 (RX) | — | **GPIO 17** | UART TX vom ESP (`MARAX_TX`) |
+| Mara X Pin 4 (TX) | — | **GPIO 16** | UART RX zum ESP (`MARAX_RX`) |
 
 > **OLED-Adresse:** Die meisten 128×64-Module verwenden `0x3C`. Bei schwarzem Display `SSD1306_I2C_ADDR` auf `0x3D` ändern.
 
-> **Mara X UART:** Der 6-polige Stecker sitzt an der Unterseite der Maschine. Falls keine Daten ankommen, RX/TX tauschen (GPIO 12 ↔ GPIO 14).
+> **Mara X UART:** Der 6-polige Stecker sitzt an der Unterseite der Maschine. Falls keine Daten ankommen, RX/TX tauschen (GPIO 16 ↔ GPIO 17).
 
-> **GPIO 12:** Strapping-Pin — bei Boot-Problemen einen anderen freien Pin verwenden und `MARAX_TX` im Sketch anpassen.
+> **Hinweis:** GPIO 16/17 werden bewusst genutzt — die früher verwendeten GPIO 12/14 funktionieren nicht zuverlässig (GPIO 12 ist ein Strapping-Pin und stört den Boot).
 
 #### ESP8266 NodeMCU — Pinbelegung
 
@@ -99,7 +101,9 @@ Die Maschine sendet etwa alle **400 ms** eine Zeile (9600 Baud, 8N1). Beispiel: 
 | HX ist | `093` | Aktuelle Brühkreis-Temperatur °C |
 | Boost | `0840` | Boost-Countdown (`0000` = Boost aktiv) |
 | Heizung | `1` | `0` = aus, `1` = an |
-| Pumpe | `0` | `0` = aus, `1` = an (Seriell-Modus im Sketch) |
+| Pumpe | `0` | `0` = aus, `1` = an — ⚠️ **nur fw 1.06; fehlt bei fw 1.23** |
+
+> Auf **fw 1.23** sendet die Maschine nur 6 Felder (ohne das Pumpenfeld): `C1.23,121,112,100,0000,0`. Vollständige Doku inkl. Firmware-Unterschiede und Boost-Verhalten: [docs/MARAX_SERIAL_PROTOCOL.md](docs/MARAX_SERIAL_PROTOCOL.md).
 
 ### OLED-Display
 
@@ -182,15 +186,37 @@ arduino-cli compile \
 3. **Datei wählen** → die `.bin` aus dem Build-Schritt
 4. **Hochladen** → ESP32 startet automatisch neu
 
-#### GitHub Actions
+#### Versionierung & Release
 
-Bei jedem Push auf `main` wird automatisch kompiliert. Bei einem Tag `v*` wird ein GitHub Release mit der Binary erstellt:
+Die Version steht zentral in [`VERSION`](VERSION) und wird per Script in den Sketch übernommen:
+
+| Datei | Rolle |
+|-------|-------|
+| [`VERSION`](VERSION) | Einzige Quelle (`X.Y.Z`) |
+| [`CHANGELOG.md`](CHANGELOG.md) | Neuerungen; `[Unreleased]` vor Release ausfüllen |
+| `timer_esp32.ino` | `FIRMWARE_VERSION` — wird vom Script gesetzt |
+| Git-Tag `vX.Y.Z` | löst GitHub Release + OTA-Versionsvergleich aus |
+
+**Neues Release (empfohlen):**
+
+1. Neuerungen in [`CHANGELOG.md`](CHANGELOG.md) unter **`[Unreleased]`** eintragen
+2. Version setzen (übernimmt Changelog-Einträge automatisch):
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+./scripts/suggest-version-bump.sh          # Empfehlung anzeigen
+./scripts/bump-version.sh patch            # 1.1.0 → 1.1.1
+./scripts/bump-version.sh minor --push     # 1.1.0 → 1.2.0 + Push
 ```
 
-Artifacts: Actions → Lauf → `firmware-esp32`
+Ohne `--push` danach manuell:
+
+```bash
+git push origin main && git push origin v1.2.0
+```
+
+Bei Tag `v*` erstellt GitHub Actions automatisch ein **Release** mit `.bin`-Dateien. Artefakte bei jedem Push auf `main`: Actions → Lauf → `firmware-esp32`.
+
+**KI / Cursor:** SemVer-Strategie und Release-Ablauf stehen in [`AGENTS.md`](AGENTS.md) und `.cursor/rules/`. Empfehlung vor dem Release: `./scripts/suggest-version-bump.sh`
 
 #### Fehlersuche OTA
 
@@ -208,7 +234,7 @@ Artifacts: Actions → Lauf → `firmware-esp32`
 | `CONFIG_AP_PASSWORD` | `"maraxsetup"` | Passwort für den Konfig-AP (min. 8 Zeichen) |
 | `OTA_UPDATE_TOKEN` | `""` | Token für Web-OTA — leer = OTA gesperrt |
 | `MQTT_BROKER` | `""` | IP/Hostname des MQTT-Brokers |
-| `reedOpenSensor` | `true` | `true` = NO-Sensor, `false` = NC-Sensor |
+| `reedOpenSensor` | `true` | `true` = NO-Sensor, `false` = NC-Sensor — auch per `/test` umschaltbar (NVS-persistent) |
 | `SSD1306_I2C_ADDR` | `0x3C` | I²C-Adresse des Displays |
 
 ### Weboberfläche (ESP32)
@@ -220,7 +246,7 @@ Nach dem Start im Heimnetz erreichbar unter `http://marax.local/` oder der IP-Ad
 | URL | Funktion |
 |-----|----------|
 | `/` | Hauptseite: Live-Pumpenstatus, Shot-Verlauf, Ziel-Einstellungen |
-| `/test` | **Diagnose:** Reed, Pumpe, Temperaturen, Pump-Quelle, AP-Status, UART-Rohdaten |
+| `/test` | **Diagnose:** Reed (+ Polarität umschalten), Pumpe, Temperaturen, Pump-Quelle, AP-Status, RSSI, UART-Rohdaten mit Feld-Aufschlüsselung |
 | `/temps` | Temperatur-Graph (Canvas, 10 Min. Verlauf) |
 | `/wifi` | WLAN ändern inkl. **Netzwerk-Scan mit Signalstärke** |
 | `/update` | Firmware per Browser (OTA) — nur mit gesetztem Token |
@@ -288,13 +314,13 @@ AP ein-/ausschalten: `/test` → Button **„AP aus/an"** oder `POST /api/set-ap
 
 | Problem | Lösung |
 |---------|--------|
-| Timer startet von allein | `reedOpenSensor = false` setzen (NC-Sensor) |
-| Timer reagiert nicht | `reedOpenSensor = true` setzen (NO-Sensor) |
+| Timer startet von allein / reagiert nicht | Reed-Polarität auf `/test` per Button umschalten (NO ↔ NC) |
 | Display bleibt schwarz | I²C-Adresse prüfen: `0x3C` oder `0x3D` |
-| Keine Mara X-Daten | GPIO 12 und 14 tauschen |
-| Flash schlägt fehl | BOOT-Taste halten beim Upload, oder Baudrate auf `115200` |
+| Keine Mara X-Daten | RX/TX (GPIO 16 ↔ 17) tauschen; `serialAge` auf `/test` prüfen |
+| Flash schlägt fehl | Baudrate auf `115200` (`UploadSpeed=115200`), ggf. BOOT-Taste halten |
 | Reed-Sensor zu empfindlich | Blaues Poti auf dem Sensor-Modul justieren |
-| Pumpe im Seriell-Modus nicht erkannt | UART-Rohdaten auf `/test` prüfen — Byte 25 muss `0` oder `1` sein |
+| Pumpe im Seriell-Modus nicht erkannt | Auf `/test` `frameFields` prüfen: bei **6** fehlt das Pumpenfeld (z. B. fw 1.23) → Reed-Sensor nötig. Nur bei **7** Feldern (fw 1.06) liefert Serial die Pumpe |
+| WLAN bricht immer wieder ab | RSSI prüfen (`/test` oder USB-Serial `[NET]`-Zeile). Unter ~−78 dBm ist das Signal zu schwach → ESP32 näher zum Router, Repeater, oder externe Antenne |
 
 ### Speicher & Grenzen (ESP32)
 
@@ -362,7 +388,9 @@ Shot timer and status display for the **Lelit Mara X** (e.g. PL62X) and similar 
 The timer can be triggered in two ways — switchable via the web UI without re-flashing:
 
 - **Reed sensor mode** (default): A reed switch mounted on the pump body detects the pump's magnetic field.
-- **Serial mode**: Pump state is read directly from the Mara X UART data stream (byte 25 in the frame `C1.06,116,124,093,0840,1,0`). No reed sensor required.
+- **Serial mode**: Pump state is read directly from the Mara X UART data stream (last frame field). No reed sensor required.
+
+> ⚠️ **Firmware-dependent!** Serial mode only works if the machine transmits the pump field. **fw 1.06** sends it (7 fields), **fw 1.23** does **not** (only 6 fields) — a reed sensor is mandatory there. Frame layout and details: [docs/MARAX_SERIAL_PROTOCOL.md](docs/MARAX_SERIAL_PROTOCOL.md).
 
 Shots under 15 seconds (e.g. boiler refills) are not saved. After 1 hour of inactivity the display enters sleep mode.
 
@@ -388,14 +416,14 @@ Shots under 15 seconds (e.g. boiler refills) are not saved. After 1 hour of inac
 | OLED | **GND** | **GND** | |
 | OLED | **SDA** | **GPIO 21** | I²C data |
 | OLED | **SCL** | **GPIO 22** | I²C clock |
-| Mara X pin 3 (RX) | — | **GPIO 12** | UART TX from ESP |
-| Mara X pin 4 (TX) | — | **GPIO 14** | UART RX to ESP |
+| Mara X pin 3 (RX) | — | **GPIO 17** | UART TX from ESP (`MARAX_TX`) |
+| Mara X pin 4 (TX) | — | **GPIO 16** | UART RX to ESP (`MARAX_RX`) |
 
 > **OLED address:** Most 128×64 modules use `0x3C`. If the display stays blank, set `SSD1306_I2C_ADDR` to `0x3D`.
 
-> **Mara X UART:** The 6-pin connector is on the underside of the machine. If you get no data, swap RX/TX (GPIO 12 ↔ GPIO 14).
+> **Mara X UART:** The 6-pin connector is on the underside of the machine. If you get no data, swap RX/TX (GPIO 16 ↔ GPIO 17).
 
-> **GPIO 12:** ESP32 strapping pin — if boot fails, use another free pin and adjust `MARAX_TX` in the sketch.
+> **Note:** GPIO 16/17 are used deliberately — the previously used GPIO 12/14 are unreliable (GPIO 12 is a strapping pin that interferes with boot).
 
 #### ESP8266 NodeMCU — pinout
 
@@ -437,7 +465,9 @@ The machine sends a line about every **400 ms** (9600 baud, 8N1). Example: `C1.0
 | HX act. | `093` | Current brew (HX) temp °C |
 | Boost | `0840` | Boost countdown (`0000` = boost active) |
 | Heating | `1` | `0` = off, `1` = on |
-| Pump | `0` | `0` = off, `1` = on (serial mode in sketch) |
+| Pump | `0` | `0` = off, `1` = on — ⚠️ **fw 1.06 only; absent on fw 1.23** |
+
+> On **fw 1.23** the machine sends only 6 fields (no pump field): `C1.23,121,112,100,0000,0`. Full docs incl. firmware differences and boost behaviour: [docs/MARAX_SERIAL_PROTOCOL.md](docs/MARAX_SERIAL_PROTOCOL.md).
 
 ### OLED Display
 
@@ -520,15 +550,37 @@ arduino-cli compile \
 3. **Choose file** → the `.bin` from the build step
 4. Click **Upload** → ESP32 reboots automatically
 
-#### GitHub Actions
+#### Versioning & release
 
-Every push to `main` triggers an automatic build. Pushing a tag `v*` creates a GitHub Release with the binary attached:
+The version lives in [`VERSION`](VERSION) and is synced into the sketch by script:
+
+| File | Role |
+|------|------|
+| [`VERSION`](VERSION) | Single source of truth (`X.Y.Z`) |
+| [`CHANGELOG.md`](CHANGELOG.md) | What's new; fill in `[Unreleased]` before release |
+| `timer_esp32.ino` | `FIRMWARE_VERSION` — set by the script |
+| Git tag `vX.Y.Z` | triggers GitHub Release + OTA version check |
+
+**New release (recommended):**
+
+1. Add changes under **`[Unreleased]`** in [`CHANGELOG.md`](CHANGELOG.md)
+2. Bump version (moves changelog entries automatically):
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+./scripts/suggest-version-bump.sh          # show recommendation
+./scripts/bump-version.sh patch            # 1.1.0 → 1.1.1
+./scripts/bump-version.sh minor --push     # 1.1.0 → 1.2.0 + push
 ```
 
-Artifacts: Actions → run → `firmware-esp32`
+Without `--push`, push manually:
+
+```bash
+git push origin main && git push origin v1.2.0
+```
+
+Tag `v*` creates a GitHub **Release** with `.bin` files. Artifacts on every push to `main`: Actions → run → `firmware-esp32`.
+
+**AI / Cursor:** See [`AGENTS.md`](AGENTS.md) and `.cursor/rules/`. Before release: `./scripts/suggest-version-bump.sh`
 
 #### OTA troubleshooting
 
@@ -626,13 +678,13 @@ Set `MQTT_BROKER` in the sketch. Topics (compatible with [alexander-heimbuch/mar
 
 | Problem | Fix |
 |---------|-----|
-| Timer starts on its own | Set `reedOpenSensor = false` (NC sensor) |
-| Timer does not react | Set `reedOpenSensor = true` (NO sensor) |
+| Timer starts on its own / does not react | Toggle reed polarity via the button on `/test` (NO ↔ NC) |
 | Display stays blank | Check I²C address: `0x3C` or `0x3D` |
-| No Mara X data | Swap GPIO 12 and 14 |
-| Flash fails | Hold BOOT during upload, or baud rate `115200` |
+| No Mara X data | Swap RX/TX (GPIO 16 ↔ 17); check `serialAge` on `/test` |
+| Flash fails | Baud rate `115200` (`UploadSpeed=115200`), hold BOOT if needed |
 | Reed sensor too sensitive | Adjust the blue potentiometer on the sensor module |
-| Pump not detected in serial mode | Check UART raw data on `/test` — byte 25 must be `0` or `1` |
+| Pump not detected in serial mode | Check `frameFields` on `/test`: **6** means no pump field (e.g. fw 1.23) → reed sensor required. Only **7** fields (fw 1.06) carry pump state |
+| WiFi keeps dropping | Check RSSI (`/test` or USB-serial `[NET]` line). Below ~−78 dBm the signal is too weak → move ESP32 closer to router, add a repeater, or use an external antenna |
 
 ### Memory & limits (ESP32)
 

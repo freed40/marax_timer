@@ -1,7 +1,11 @@
-# Firmware mit arduino-cli bauen. Artefakte: .bin für USB-Flash & Web-OTA.
+# Firmware bauen & automatisch versionieren.
 #
-# ESP32 Core 2.0.17 wird gepinnt (neuere Versionen laden >500 MB RISC-V Toolchain).
-# Bei Push eines Tags v* (z. B. v1.2.0): GitHub Release mit .bin Dateien.
+# Push auf main  →  Patch automatisch hochzählen (VERSION + Sketch), Commit + Tag setzen
+# Tag v*         →  ESP32 + ESP8266 kompilieren, GitHub Release erstellen (max. 3 behalten)
+# Pull Request   →  nur kompilieren (Prüfung, kein Release)
+# Manuell:       →  ./scripts/bump-version.sh minor|major [--push] für größere Sprünge
+#
+# ESP32 Core 2.0.17 gepinnt (neuere Versionen laden >500 MB RISC-V Toolchain).
 
 name: Firmware bauen
 
@@ -17,15 +21,53 @@ permissions:
   contents: read
 
 jobs:
+
+  # ── 1. Patch-Version hochzählen (nur bei Push auf main) ───────────────────
+  auto-version:
+    name: Patch-Version hochzählen
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch hochzählen & Tag setzen
+        run: |
+          OLD="$(tr -d '[:space:]' < VERSION)"
+          IFS=. read -r MA MI PA <<< "$OLD"
+          NEW="$MA.$MI.$((PA + 1))"
+          echo "$NEW" > VERSION
+          sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$NEW\"/" timer_esp32/timer_esp32.ino
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION timer_esp32/timer_esp32.ino
+          git commit -m "Release v$NEW [skip ci]"
+          git push origin HEAD:main
+          git tag "v$NEW"
+          git push origin "v$NEW"
+          echo "Bump: $OLD → $NEW"
+
+  # ── 2. ESP32 kompilieren ──────────────────────────────────────────────────
   esp32:
     name: ESP32 (timer_esp32)
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
+      - name: Version in Sketch setzen
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VER\"/" timer_esp32/timer_esp32.ino
+          echo "Firmware-Version: $VER"
+
+      - uses: arduino/setup-arduino-cli@v2
 
       - name: Verzeichnisse
         run: |
@@ -52,22 +94,24 @@ jobs:
             --output-dir firmware-esp32 \
             timer_esp32
 
-      - name: Artefakt hochladen
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: firmware-esp32
           path: firmware-esp32/*.bin
           if-no-files-found: error
 
+  # ── 3. ESP8266 kompilieren ────────────────────────────────────────────────
   esp8266:
     name: ESP8266 (timer)
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
+      - uses: arduino/setup-arduino-cli@v2
 
       - name: Verzeichnisse
         run: |
@@ -103,29 +147,48 @@ jobs:
             --output-dir firmware-esp8266 \
             timer
 
-      - name: Artefakt hochladen
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: firmware-esp8266
           path: firmware-esp8266/*.bin
           if-no-files-found: error
 
+  # ── 4. GitHub Release erstellen + alte aufräumen ──────────────────────────
   release:
     name: GitHub Release
     needs: [esp32, esp8266]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Artefakt ESP32 laden
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - name: Release-Notes aus CHANGELOG
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          NOTES="release-notes.md"
+          if [[ -f CHANGELOG.md ]]; then
+            awk -v ver="$VER" '
+              $0 ~ "^## \\[" ver "\\]" { found = 1; next }
+              found && /^## \[/ { exit }
+              found { print }
+            ' CHANGELOG.md > "$NOTES"
+            if [[ ! -s "$NOTES" ]]; then
+              echo "Keine CHANGELOG-Einträge für v$VER." > "$NOTES"
+            fi
+          else
+            echo "Release v$VER" > "$NOTES"
+          fi
+          echo "--- Release-Notes ---"
+          cat "$NOTES"
+
+      - uses: actions/download-artifact@v4
         with:
           name: firmware-esp32
           path: assets/esp32
 
-      - name: Artefakt ESP8266 laden
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: firmware-esp8266
           path: assets/esp8266
@@ -136,6 +199,18 @@ jobs:
           files: |
             assets/esp32/*.bin
             assets/esp8266/*.bin
-          generate_release_notes: true
+          body_path: release-notes.md
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Alte Releases aufräumen (max. 3 behalten)
+        run: |
+          TO_DELETE=$(gh release list --limit 100 --json tagName,createdAt \
+            | jq -r 'sort_by(.createdAt) | reverse | .[3:][].tagName')
+          for TAG in $TO_DELETE; do
+            echo "Lösche alten Release: $TAG"
+            gh release delete "$TAG" --yes --cleanup-tag || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

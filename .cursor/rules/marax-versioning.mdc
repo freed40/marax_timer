@@ -1,0 +1,30 @@
+---
+description: MaraX SemVer, VERSION-Datei und Release via bump-version.sh
+alwaysApply: true
+---
+
+# Versionierung (MaraX Timer)
+
+Quelle: `VERSION` → Script setzt `FIRMWARE_VERSION` in `timer_esp32.ino` + Git-Tag `vX.Y.Z`.
+
+**Nie** `#define FIRMWARE_VERSION` von Hand editieren. Neuerungen in `CHANGELOG.md` → `[Unreleased]`.
+
+## Stufe wählen (SemVer)
+
+| Stufe | Trigger |
+|-------|---------|
+| `patch` | Doku, README, Bilder, CI, Bugfix ohne API-Änderung |
+| `minor` | Neues Feature / Web-Route / Display / MQTT (kompatibel) |
+| `major` | Breaking: Pinout, NVS, Partition, entfernte Endpunkte/Topics |
+
+Heuristik: `./scripts/suggest-version-bump.sh` (Diff seit letztem Tag).
+
+## Release (nur wenn Nutzer Release will)
+
+```bash
+./scripts/suggest-version-bump.sh
+./scripts/bump-version.sh patch|minor|major        # Commit + Tag
+./scripts/bump-version.sh minor --push             # nur mit Nutzer-OK
+```
+
+Details: `AGENTS.md`. Push erstellt GitHub Release via Tag `v*`.
