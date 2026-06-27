@@ -69,6 +69,38 @@ Shots unter 15 Sekunden (z. B. Boiler-Nachfüllen) werden nicht gespeichert. Nac
 | Mara X RX | D6 | GPIO 12 |
 | Mara X TX | D5 | GPIO 14 |
 
+#### Mara X — serielle Schnittstelle
+
+Die Mara X (V2) hat einen **6-poligen Stecker** an der Unterseite der Maschine. Für Temperatur, Heizstatus und Pumpenstatus per UART werden **Pin 3** (Mara RX) und **Pin 4** (Mara TX) genutzt — **kreuzweise** verbinden: Mara RX → ESP-TX, Mara TX → ESP-RX.
+
+| Mara X | Kabel (typ.) | Funktion | ESP8266 | ESP32 (Sketch) |
+|--------|--------------|----------|---------|----------------|
+| Pin 3 | schwarz | Mara **RX** (Empfang) | D6 → GPIO 12 | `MARAX_TX` GPIO 17 |
+| Pin 4 | orange | Mara **TX** (Senden) | D5 → GPIO 14 | `MARAX_RX` GPIO 16 |
+
+Stecker an der Unterseite — Pin 3 und 4 markiert:
+
+![](resources/marax-serial-bottom.png)
+
+Stecker im Detail:
+
+![](resources/marax-serial-connector.png)
+
+*Schnittstellen-Fotos: [SaibotFlow/marax-monitor](https://github.com/SaibotFlow/marax-monitor) (GPL-3.0)*
+
+Die Maschine sendet etwa alle **400 ms** eine Zeile (9600 Baud, 8N1). Beispiel: `C1.06,116,124,093,0840,1,0`
+
+| Feld | Beispiel | Bedeutung |
+|------|----------|-----------|
+| Modus | `C` | `C` = Kaffee, `V` = Dampf |
+| Firmware | `1.06` | Maschinen-Firmware |
+| Dampf ist | `116` | Aktuelle Dampftemperatur °C |
+| Dampf Soll | `124` | Ziel-Dampftemperatur °C |
+| HX ist | `093` | Aktuelle Brühkreis-Temperatur °C |
+| Boost | `0840` | Boost-Countdown (`0000` = Boost aktiv) |
+| Heizung | `1` | `0` = aus, `1` = an |
+| Pumpe | `0` | `0` = aus, `1` = an (Seriell-Modus im Sketch) |
+
 ### OLED-Display
 
 **Leerlauf** — zweigeteilte Ansicht (Trennlinie bei x=63):
@@ -304,7 +336,7 @@ Siehe [LICENSE](LICENSE).
 
 - [alexrus / espresso_timer](https://github.com/alexrus/espresso_timer)
 - [alexander-heimbuch / marax_timer](https://github.com/alexander-heimbuch/marax_timer)
-- [SaibotFlow / marax-monitor](https://github.com/SaibotFlow/marax-monitor) — Protokoll-Referenz serieller Pump-Status
+- [SaibotFlow / marax-monitor](https://github.com/SaibotFlow/marax-monitor) — Protokoll-Referenz, Schnittstellen-Fotos (GPL-3.0)
 - [Home-Barista Forum](https://www.home-barista.com/espresso-machines/lelit-marax-t61215-350.html#p723763)
 - [YouTube](https://www.youtube.com/watch?v=e9FXYfr5ro4&t=526s)
 
@@ -374,6 +406,38 @@ Shots under 15 seconds (e.g. boiler refills) are not saved. After 1 hour of inac
 | OLED SCL | D1 | GPIO 5 |
 | Mara X RX | D6 | GPIO 12 |
 | Mara X TX | D5 | GPIO 14 |
+
+#### Mara X — serial interface
+
+The Mara X (V2) has a **6-pin connector** on the underside. For temperature, heating status, and pump state via UART, use **pin 3** (Mara RX) and **pin 4** (Mara TX) — wire **crossed**: Mara RX → ESP TX, Mara TX → ESP RX.
+
+| Mara X | Wire (typ.) | Function | ESP8266 | ESP32 (sketch) |
+|--------|-------------|----------|---------|----------------|
+| Pin 3 | black | Mara **RX** (receive) | D6 → GPIO 12 | `MARAX_TX` GPIO 17 |
+| Pin 4 | orange | Mara **TX** (transmit) | D5 → GPIO 14 | `MARAX_RX` GPIO 16 |
+
+Connector on the underside — pins 3 and 4 marked:
+
+![](resources/marax-serial-bottom.png)
+
+Connector close-up:
+
+![](resources/marax-serial-connector.png)
+
+*Interface photos: [SaibotFlow/marax-monitor](https://github.com/SaibotFlow/marax-monitor) (GPL-3.0)*
+
+The machine sends a line about every **400 ms** (9600 baud, 8N1). Example: `C1.06,116,124,093,0840,1,0`
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| Mode | `C` | `C` = coffee, `V` = steam |
+| Firmware | `1.06` | Machine firmware |
+| Steam act. | `116` | Current steam temp °C |
+| Steam target | `124` | Target steam temp °C |
+| HX act. | `093` | Current brew (HX) temp °C |
+| Boost | `0840` | Boost countdown (`0000` = boost active) |
+| Heating | `1` | `0` = off, `1` = on |
+| Pump | `0` | `0` = off, `1` = on (serial mode in sketch) |
 
 ### OLED Display
 
@@ -610,6 +674,6 @@ See [LICENSE](LICENSE).
 
 - [alexrus / espresso_timer](https://github.com/alexrus/espresso_timer)
 - [alexander-heimbuch / marax_timer](https://github.com/alexander-heimbuch/marax_timer)
-- [SaibotFlow / marax-monitor](https://github.com/SaibotFlow/marax-monitor) — serial protocol reference for pump state
+- [SaibotFlow / marax-monitor](https://github.com/SaibotFlow/marax-monitor) — serial protocol reference, interface photos (GPL-3.0)
 - [Home-Barista forum](https://www.home-barista.com/espresso-machines/lelit-marax-t61215-350.html#p723763)
 - [YouTube](https://www.youtube.com/watch?v=e9FXYfr5ro4&t=526s)
