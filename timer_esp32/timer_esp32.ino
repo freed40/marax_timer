@@ -31,8 +31,8 @@
 #define I2C_SCL 22
 // SSD1306 I2C: die meisten 128x64-Module 0x3C, manche 0x3D — bei schwarzem Display wechseln.
 #define SSD1306_I2C_ADDR 0x3C
-#define MARAX_RX 14
-#define MARAX_TX 12
+#define MARAX_RX 16
+#define MARAX_TX 17
 
 // DevKit V1: Onboard-LED meist GPIO 2. FQBN esp32:esp32:esp32 setzt oft kein LED_BUILTIN.
 #ifndef LED_BUILTIN
@@ -67,7 +67,8 @@ const char *MQTT_PASSWORD = "";
 // Firmware-Update per Webbrowser (/update). Leer lassen = OTA-Seite gesperrt.
 const char *OTA_UPDATE_TOKEN = "maraxota";
 
-#define FIRMWARE_VERSION "1.1.0"
+// Muss mit VERSION im Repo-Root übereinstimmen — ./scripts/bump-version.sh
+#define FIRMWARE_VERSION "1.2.0"
 static const char FIRMWARE_BUILT[] = __DATE__ " " __TIME__;
 #define GITHUB_REPO "freed40/marax_timer"
 
@@ -118,12 +119,16 @@ static int tempHistoryHead = 0;
 static int tempHistoryCount = 0;
 static unsigned long lastTempSampleMs = 0;
 
-// Pump-Source: false = Reed-GPIO (default), true = UART-Serielldaten
+// Pump-Source: false = Reed-GPIO (Standard) — fw 1.23 sendet KEIN Pumpenfeld,
+//              daher ist der Reed-Sensor nötig. true = UART (nur fw 1.06 mit 7 Feldern).
 bool g_useSerialPump = false;
 bool g_serialPumpActive = false;
+int g_serialFrameFields = 0;  // Anzahl Komma-Felder im letzten Frame (6=fw1.23 ohne Pumpe, 7=fw1.06 mit Pumpe)
 
-// Fallback-AP: läuft parallel zum Heimnetz; per API/UI abschaltbar
+// Fallback-AP: erlaubt einen AP NUR wenn die STA-Verbindung länger weg ist
+// (nicht parallel zum stabilen Heimnetz – das destabilisiert den ESP32-Funk).
 bool g_apEnabled = true;
+bool g_fallbackApActive = false;
 
 // true/false je nach Reed-Typ (Modul / Schaltlogik); bei falscher Polarität anpassen
 bool reedOpenSensor = true;
@@ -164,6 +169,7 @@ static void loadWifiCredentials() {
   targetShotSeconds = prefs.getInt("targshot", 27);
   targetHxTemp = prefs.getInt("targhx", 93);
   g_useSerialPump = prefs.getBool("serialpump", false);
+  reedOpenSensor = prefs.getBool("reedopen", true);
   g_apEnabled = prefs.getBool("apon", true);
   if (g_wifiStaSsid.isEmpty() && WIFI_SSID[0] != '\0') {
     g_wifiStaSsid = WIFI_SSID;
@@ -175,7 +181,7 @@ static void checkLatestVersion() {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient https;
-  https.setTimeout(6000);
+  https.setTimeout(4000);
   https.begin(client, "https://api.github.com/repos/" GITHUB_REPO "/releases/latest");
   https.addHeader("User-Agent", "MaraX-Timer/" FIRMWARE_VERSION);
   if (https.GET() == 200) {
@@ -191,6 +197,23 @@ static void checkLatestVersion() {
     }
   }
   https.end();
+}
+
+static void handleApiCheckVersion() {
+  if (WiFi.status() != WL_CONNECTED) {
+    server.send(200, "application/json",
+      "{\"current\":\"" FIRMWARE_VERSION "\",\"latest\":\"\",\"upToDate\":null,\"error\":\"kein WLAN\"}");
+    return;
+  }
+  checkLatestVersion();
+  String json = "{\"current\":\"" FIRMWARE_VERSION "\",\"latest\":\"";
+  json += g_latestVersion;
+  json += "\",\"upToDate\":";
+  if (g_latestVersion.length() == 0)      json += "null";
+  else if (g_latestVersion == FIRMWARE_VERSION) json += "true";
+  else                                          json += "false";
+  json += "}";
+  server.send(200, "application/json", json);
 }
 
 static bool wifiCredentialsConfigured() {
@@ -222,7 +245,7 @@ static bool tryConnectSta() {
   WiFi.setSleep(false);
   WiFi.begin(g_wifiStaSsid.c_str(), g_wifiStaPass.c_str());
   uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 45000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
     delay(100);
   }
   return WiFi.status() == WL_CONNECTED;
@@ -301,14 +324,32 @@ static void setupWifiAndServices() {
   if (MQTT_BROKER[0] != '\0') {
     mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   }
-  if (g_apEnabled) {
-    WiFi.mode(WIFI_AP_STA);
-    if (strlen(CONFIG_AP_PASSWORD) >= 8) {
-      WiFi.softAP("MaraX-Timer", CONFIG_AP_PASSWORD);
-    } else {
-      WiFi.softAP("MaraX-Timer");
-    }
+  // Kein softAP parallel zur STA: reiner STA-Modus hält die Heimnetz-Verbindung
+  // stabil. Der Fallback-AP kommt nur in maybeReconnectWifi() hoch, wenn STA wegbricht.
+  WiFi.mode(WIFI_STA);
+}
+
+static void startFallbackAp() {
+  if (g_fallbackApActive)
+    return;
+  WiFi.mode(WIFI_AP_STA);
+  if (strlen(CONFIG_AP_PASSWORD) >= 8) {
+    WiFi.softAP("MaraX-Timer", CONFIG_AP_PASSWORD);
+  } else {
+    WiFi.softAP("MaraX-Timer");
   }
+  g_fallbackApActive = true;
+  Serial.print("Fallback-AP aktiv (STA weg). IP: ");
+  Serial.println(WiFi.softAPIP());
+}
+
+static void stopFallbackAp() {
+  if (!g_fallbackApActive)
+    return;
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  g_fallbackApActive = false;
+  Serial.println("Fallback-AP aus (STA wieder verbunden)");
 }
 
 static void maybeReconnectWifi() {
@@ -316,13 +357,32 @@ static void maybeReconnectWifi() {
     return;
   if (!wifiCredentialsConfigured())
     return;
-  if (WiFi.status() == WL_CONNECTED)
+
+  static unsigned long disconnectedSinceMs = 0;
+  static unsigned long lastReconnectMs = 0;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    disconnectedSinceMs = 0;
+    if (g_fallbackApActive)
+      stopFallbackAp();
     return;
-  static unsigned long lastMs = 0;
-  if (millis() - lastMs < 30000)
-    return;
-  lastMs = millis();
-  WiFi.reconnect();
+  }
+
+  // STA ist getrennt
+  if (disconnectedSinceMs == 0)
+    disconnectedSinceMs = millis();
+
+  // Alle 15 s einen Reconnect versuchen
+  if (millis() - lastReconnectMs >= 15000) {
+    lastReconnectMs = millis();
+    WiFi.reconnect();
+  }
+
+  // Erst nach 45 s ohne Verbindung den Fallback-AP hochfahren (falls erlaubt)
+  if (g_apEnabled && !g_fallbackApActive &&
+      millis() - disconnectedSinceMs >= 45000) {
+    startFallbackAp();
+  }
 }
 
 static void handleApiDemo();
@@ -362,9 +422,11 @@ static void setupWebServer() {
   server.on("/temps", HTTP_GET, handleTempsPage);
   server.on("/api/clear", HTTP_POST, handleClearHistory);
   server.on("/api/set-pump-source", HTTP_POST, handleApiSetPumpSource);
+  server.on("/api/set-reed", HTTP_POST, handleApiSetReed);
   server.on("/api/set-ap", HTTP_POST, handleApiSetAp);
   server.on("/api/settings", HTTP_GET, handleApiGetSettings);
   server.on("/api/settings", HTTP_POST, handleApiPostSettings);
+  server.on("/api/checkversion", HTTP_GET, handleApiCheckVersion);
   server.on("/update", HTTP_GET, handleUpdateGet);
   server.on(
       "/update", HTTP_POST,
@@ -428,6 +490,39 @@ static void sendWifiConfigPage() {
   html += F("s.onclick=function(){document.getElementById('ssid').value=n.ssid;};");
   html += F("d.appendChild(s);});");
   html += F("}).catch(()=>{document.getElementById('nets').innerHTML='<em>Scan fehlgeschlagen</em>';});");
+  html += F("</script>");
+  html += F("<hr style=\"margin:1.5rem 0\">");
+  html += F("<h2>Einstellungen wiederherstellen</h2>");
+  html += F("<p style=\"font-size:.9rem\">JSON-Datei hochladen um WLAN, Zielwerte und Pumpenquelle wiederherzustellen.</p>");
+  html += F("<div id=\"imp-status\"></div>");
+  html += F("<label style=\"display:block;margin:.5rem 0\">");
+  html += F("Einstellungsdatei (.json)");
+  html += F("<input type=\"file\" id=\"imp-file\" accept=\".json\" style=\"display:block;margin-top:.3rem\">");
+  html += F("</label>");
+  html += F("<button onclick=\"doImport()\">Einstellungen importieren</button>");
+  html += F("<script>");
+  html += F("function doImport(){");
+  html += F("var f=document.getElementById('imp-file').files[0];");
+  html += F("if(!f){alert('Bitte eine JSON-Datei ausw\\u00e4hlen.');return;}");
+  html += F("var r=new FileReader();");
+  html += F("r.onload=function(e){");
+  html += F("var j;try{j=JSON.parse(e.target.result);}catch(x){alert('Ung\\u00fcltiges JSON.');return;}");
+  html += F("var p=new URLSearchParams();");
+  html += F("if(j.ssid!==undefined)p.set('ssid',j.ssid);");
+  html += F("if(j.pass!==undefined)p.set('pass',j.pass);");
+  html += F("if(j.targetShot!==undefined)p.set('targetShot',j.targetShot);");
+  html += F("if(j.targetHx!==undefined)p.set('targetHx',j.targetHx);");
+  html += F("if(j.pumpSource!==undefined)p.set('pumpSource',j.pumpSource);");
+  html += F("if(j.apEnabled!==undefined)p.set('apEnabled',j.apEnabled?'1':'0');");
+  html += F("var s=document.getElementById('imp-status');");
+  html += F("s.textContent='Importiere...';");
+  html += F("fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()})");
+  html += F(".then(r=>r.json()).then(d=>{");
+  html += F("if(d.ok&&d.reboot){s.textContent='Gespeichert! Ger\\u00e4t startet neu...';}");
+  html += F("else if(d.ok){s.textContent='Gespeichert (kein Neustart erforderlich).';}");
+  html += F("else{s.textContent='Fehler beim Speichern.';}");
+  html += F("}).catch(()=>{s.textContent='Verbindungsfehler.';});};");
+  html += F("r.readAsText(f);}");
   html += F("</script>");
   html += F("<p><a href=\"/\">Zur&uuml;ck</a></p></body></html>");
   server.send(200, "text/html; charset=utf-8", html);
@@ -599,11 +694,21 @@ static void handleRootPage() {
   html += F("r.readAsText(f);}");
   html += F("</script>");
   html += F("<p style=\"font-size:.72rem;color:#aaa;text-align:center;margin-top:1rem\">");
-  html += F("v" FIRMWARE_VERSION " &middot; ");
+  html += F("v" FIRMWARE_VERSION);
+  html += F(" <span id=\"vck\">(<a href=\"#\" onclick=\"chkVer();return false;\" style=\"color:#aaa\">Update pr&uuml;fen</a>)</span>");
+  html += F(" &middot; ");
   html += FIRMWARE_BUILT;
   html += F(" &middot; <a href=\"https://github.com/freed40/marax_timer\" target=\"_blank\" style=\"color:#aaa\">GitHub</a>");
   html += F(" &middot; <a href=\"https://github.com/freed40/marax_timer/releases\" target=\"_blank\" style=\"color:#aaa\">Releases</a>");
   html += F("</p>");
+  html += F("<script>function chkVer(){var e=document.getElementById('vck');e.textContent='...';");
+  html += F("fetch('/api/checkversion').then(r=>r.json()).then(d=>{");
+  html += F("if(d.error){e.textContent='('+d.error+')';}");
+  html += F("else if(d.upToDate===true){e.innerHTML='(&#10003; aktuell)';}");
+  html += F("else if(d.upToDate===false){e.innerHTML='(&#8593; <a href=\"https://github.com/freed40/marax_timer/releases\"");
+  html += F(" target=\"_blank\" style=\"color:#f59e0b\">v'+d.latest+' verf&uuml;gbar</a>)';}");
+  html += F("else{e.innerHTML='(nicht pr&uuml;fbar)';}");
+  html += F("}).catch(()=>{e.textContent='(Fehler)';});}</script>");
   html += F("</body></html>");
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -815,16 +920,11 @@ static void handleApiSetAp() {
   }
   g_apEnabled = (server.arg("enabled") != "0");
   prefs.putBool("apon", g_apEnabled);
-  if (g_apEnabled && !g_configPortalMode) {
-    WiFi.mode(WIFI_AP_STA);
-    if (strlen(CONFIG_AP_PASSWORD) >= 8) {
-      WiFi.softAP("MaraX-Timer", CONFIG_AP_PASSWORD);
-    } else {
-      WiFi.softAP("MaraX-Timer");
-    }
-  } else if (!g_apEnabled && !g_configPortalMode) {
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
+  // g_apEnabled steuert nur, OB der Fallback-AP bei STA-Ausfall hochkommen darf.
+  // Kein softAP parallel zur stabilen Verbindung. Falls gerade ein Fallback-AP
+  // läuft und deaktiviert wird, diesen abschalten.
+  if (!g_apEnabled && g_fallbackApActive) {
+    stopFallbackAp();
   }
   server.send(200, "application/json",
     "{\"ok\":true,\"ap\":" + String(g_apEnabled ? "true" : "false") + "}");
@@ -841,8 +941,21 @@ static void handleApiSetPumpSource() {
   }
 }
 
+// Reed-Polarität umschalten (Schließer/Öffner). Ohne Argument: einfach toggeln.
+static void handleApiSetReed() {
+  if (server.hasArg("open")) {
+    reedOpenSensor = (server.arg("open") != "0");
+  } else {
+    reedOpenSensor = !reedOpenSensor;
+  }
+  prefs.putBool("reedopen", reedOpenSensor);
+  server.send(200, "application/json",
+    "{\"ok\":true,\"reedOpen\":" + String(reedOpenSensor ? "true" : "false") + "}");
+}
+
 static void handleApiStatus() {
   String json = "{";
+  json.reserve(480);  // einmal allokieren statt bei jedem += neu (500ms-Polling)
   json += "\"pump\":" + String(shotRunning ? "true" : "false");
   json += ",\"timer\":" + String(shotRunning ? (int)((millis() - timerStartMillis) / 1000) : prevTimerCount);
   json += ",\"reed\":" + String(digitalRead(REED_PIN));
@@ -851,14 +964,20 @@ static void handleApiStatus() {
   json += ",\"state\":\"" + machineState + "\"";
   json += ",\"heating\":" + String(machineHeating ? "true" : "false");
   json += ",\"boost\":" + String(machineHeatingBoost ? "true" : "false");
-  json += ",\"raw\":\"" + String(receivedChars) + "\"";
+  { String r = String(receivedChars); r.replace("\r",""); r.replace("\"","\\\""); json += ",\"raw\":\"" + r + "\""; }
   json += ",\"demo\":" + String(g_demoMode ? "true" : "false");
   json += ",\"pumpSource\":\"" + String(g_useSerialPump ? "serial" : "reed") + "\"";
+  json += ",\"reedOpen\":" + String(reedOpenSensor ? "true" : "false");
   json += ",\"serialPump\":" + String(g_serialPumpActive ? "true" : "false");
+  json += ",\"frameFields\":" + String(g_serialFrameFields);
   json += ",\"ap\":" + String(g_apEnabled ? "true" : "false");
+  json += ",\"apActive\":" + String(g_fallbackApActive ? "true" : "false");
+  json += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+  json += ",\"rssi\":" + String(WiFi.RSSI());
   json += ",\"version\":\"" FIRMWARE_VERSION "\"";
   json += ",\"built\":\"" + String(FIRMWARE_BUILT) + "\"";
   json += ",\"latestVersion\":\"" + g_latestVersion + "\"";
+  json += ",\"serialAge\":" + String((millis() - serialUpdateMillis) / 1000);
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -1040,9 +1159,11 @@ static void handleTestPage() {
   html += F("<p><button id=\"demobtn\" onclick=\"toggleDemo()\" style=\"padding:.4rem .9rem\">Demo-Shot starten</button>");
   html += F(" <span id=\"demostatus\" style=\"font-size:.85rem;color:#777\"></span></p>");
   html += F("<p><button id=\"apbtn\" onclick=\"toggleAp()\" style=\"padding:.4rem .9rem\">AP aus</button>");
-  html += F(" <span style=\"font-size:.85rem;color:#777\">Fallback-AP (192.168.4.1) &mdash; bei Heimnetz-Ausfall immer aktiv</span></p>");
+  html += F(" <span style=\"font-size:.85rem;color:#777\">Fallback-AP (192.168.4.1) &mdash; kommt nur bei l&auml;ngerem Heimnetz-Ausfall hoch</span></p>");
   html += F("<div class=\"row\">");
-  html += F("<div class=\"card\"><div class=\"label\">Reed-Pin (GPIO 18)</div><div class=\"val\" id=\"reed\">-</div></div>");
+  html += F("<div class=\"card\"><div class=\"label\">Reed-Pin (GPIO 18)</div><div class=\"val\" id=\"reed\">-</div>");
+  html += F("<button onclick=\"flipReed()\" style=\"margin-top:.3rem;font-size:.78rem;padding:.2rem .5rem\">Polarit&auml;t umschalten</button>");
+  html += F("<div id=\"reedpol\" style=\"font-size:.72rem;color:#777\"></div></div>");
   html += F("<div class=\"card\"><div class=\"label\">Pumpe</div><div class=\"val\" id=\"pump\">-</div></div>");
   html += F("<div class=\"card\"><div class=\"label\">Timer</div><div class=\"val\" id=\"timer\">-</div></div>");
   html += F("</div><div class=\"row\">");
@@ -1056,7 +1177,15 @@ static void handleTestPage() {
   html += F("<div class=\"card\"><div class=\"label\">Seriell Pumpe</div><div class=\"val\" id=\"spump\">-</div></div>");
   html += F("<div class=\"card\"><div class=\"label\">Fallback-AP</div><div class=\"val\" id=\"apstate\">-</div></div>");
   html += F("</div>");
-  html += F("<div class=\"card\"><div class=\"label\">Rohdaten UART (letzte Zeile)</div><div id=\"raw\" style=\"font-family:monospace;word-break:break-all\">-</div></div>");
+  html += F("<div class=\"card\"><div class=\"label\">UART Mara X &mdash; RX GPIO ");
+  html += String(MARAX_RX);
+  html += F(", TX GPIO ");
+  html += String(MARAX_TX);
+  html += F("</div>");
+  html += F("<div id=\"raw\" style=\"font-family:monospace;word-break:break-all;margin:.3rem 0\">-</div>");
+  html += F("<div id=\"fields\" style=\"display:flex;gap:.3rem;flex-wrap:wrap;margin:.3rem 0\"></div>");
+  html += F("<div style=\"font-size:.78rem;color:#777;margin:.2rem 0\">Brühvorgang starten und beobachten, welches Feld sich ändert &mdash; das wäre der Pumpenstatus.</div>");
+  html += F("<div id=\"serialage\" style=\"font-size:.8rem;color:#777\">-</div></div>");
   html += F("<p style=\"margin-top:1rem\"><a href=\"/\">&#8592; Zur&uuml;ck</a></p>");
   html += F("<script>");
   html += F("function toggleDemo(){fetch('/api/demo',{method:'POST'}).then(r=>r.json()).then(d=>{");
@@ -1066,11 +1195,14 @@ static void handleTestPage() {
   html += F("fetch('/api/set-ap?enabled='+(on?'1':'0'),{method:'POST'}).then(r=>r.json()).then(d=>{");
   html += F("document.getElementById('apbtn').textContent=d.ap?'AP aus':'AP an';");
   html += F("document.getElementById('apbtn').dataset.on=d.ap?'1':'0';});}");
+  html += F("function flipReed(){fetch('/api/set-reed',{method:'POST'}).then(r=>r.json()).then(d=>{");
+  html += F("document.getElementById('reedpol').textContent='Modus: '+(d.reedOpen?'Schlie\\u00dfer (NO)':'\\u00d6ffner (NC)');});}");
   html += F("function upd(){fetch('/api/status').then(r=>r.json()).then(d=>{");
   html += F("if(d.demo)document.getElementById('demostatus').textContent='Demo aktiv';");
   html += F("var apb=document.getElementById('apbtn');apb.textContent=d.ap?'AP aus':'AP an';apb.dataset.on=d.ap?'1':'0';");
   html += F("document.getElementById('reed').textContent=d.reed?'HIGH (offen)':'LOW (aktiv)';");
   html += F("document.getElementById('reed').className='val '+(d.reed?'off':'on');");
+  html += F("document.getElementById('reedpol').textContent='Modus: '+(d.reedOpen?'Schlie\\u00dfer (NO)':'\\u00d6ffner (NC)');");
   html += F("document.getElementById('pump').textContent=d.pump?'AN':'aus';");
   html += F("document.getElementById('pump').className='val '+(d.pump?'on':'off');");
   html += F("document.getElementById('timer').textContent=d.timer+'s';");
@@ -1086,7 +1218,15 @@ static void handleTestPage() {
   html += F("document.getElementById('apstate').textContent=d.ap?'AN':'aus';");
   html += F("document.getElementById('apstate').className='val '+(d.ap?'on':'off');");
   html += F("document.getElementById('raw').textContent=d.raw||'(keine Daten)';");
-  html += F("});}");
+  html += F("var fd=document.getElementById('fields');fd.innerHTML='';");
+  html += F("(d.raw||'').split(',').forEach(function(v,i){var b=document.createElement('span');");
+  html += F("b.style='font-family:monospace;font-size:.8rem;padding:.15rem .4rem;border-radius:4px;background:#eef;border:1px solid #ccd';");
+  html += F("b.textContent='['+i+'] '+v;fd.appendChild(b);});");
+  html += F("var age=d.serialAge;");
+  html += F("document.getElementById('serialage').textContent=");
+  html += F("age<5?'Daten empfangen ('+age+'s)':age<30?'Letzter Empfang vor '+age+'s':'Keine Daten seit '+age+'s — Verkabelung prüfen (RX↔TX tauschen?)';");
+  html += F("document.getElementById('serialage').style.color=age<5?'#16a34a':age<30?'#d97706':'#dc2626'");
+  html += F("}).catch(e=>console.warn('status',e));}");
   html += F("upd();setInterval(upd,500);");
   html += F("</script>");
   html += F("<p style=\"font-size:.72rem;color:#aaa;text-align:center;margin-top:1rem\">v");
@@ -1233,48 +1373,45 @@ void updateMqtt() {
   }
 }
 
-static String getMachineStateFromLine() {
-  if (String(receivedChars[0]) == "C") {
-    return "C";
-  }
-  if (String(receivedChars[0]) == "V") {
-    return "S";
-  }
-  return "X";
-}
-
-static bool getMachineHeatingFromLine() {
-  return String(receivedChars[23]) == "1";
-}
-
-static bool getMachineHeatingBoostFromLine() {
-  return String(receivedChars).substring(18, 22) == "0000";
-}
-
-static int getTemperatureHxFromLine() {
-  if (receivedChars[14] && receivedChars[15] && receivedChars[16]) {
-    return String(receivedChars).substring(14, 17).toInt();
-  }
-  return MARAX_TEMP_INVALID;
-}
-
-static int getTemperatureSteamFromLine() {
-  if (receivedChars[6] && receivedChars[7] && receivedChars[8]) {
-    return String(receivedChars).substring(6, 9).toInt();
-  }
-  return MARAX_TEMP_INVALID;
-}
-
 static void applyMachineTelemetryFromLine() {
-  machineState = getMachineStateFromLine();
-  machineHeating = getMachineHeatingFromLine();
-  machineHeatingBoost = getMachineHeatingBoostFromLine();
-  hxTemperature = getTemperatureHxFromLine();
-  steamTemperature = getTemperatureSteamFromLine();
-  // Pump state: last CSV field (index 25 in frame "C1.06,116,124,093,0840,1,0")
-  if (receivedChars[25] != '\0') {
-    g_serialPumpActive = (receivedChars[25] == '1');
+  // Mara-X-Frame: "C1.06,116,124,093,0840,1,0"
+  // Felder (per Komma): 0=Modus+FW  1=Dampf-Temp  2=Dampf-Ziel  3=HX-Temp
+  //                     4=Boost-Countdown  5=Heizung(0/1)  6=Pumpe(0/1)
+  // Robust per Komma trennen statt feste Zeichen-Indizes: Mara-X-Firmwares
+  // senden 3- oder 4-stellige Temperaturen, feste Offsets würden verrutschen.
+  char buf[numChars];
+  strncpy(buf, receivedChars, numChars);
+  buf[numChars - 1] = '\0';
+
+  char *fields[8] = {0};
+  int n = 0;
+  char *p = buf;
+  fields[n++] = p;
+  while (*p && n < 8) {
+    if (*p == ',') {
+      *p = '\0';
+      fields[n++] = p + 1;
+    }
+    p++;
   }
+  // Mindestens Modus + Dampf + Dampf-Ziel + HX (4 Felder) für gültige Temperaturen.
+  if (n < 4) return;
+
+  char mode = fields[0][0];
+  machineState = (mode == 'C') ? "C" : (mode == 'V') ? "S" : "X";
+  steamTemperature = fields[1][0] ? atoi(fields[1]) : MARAX_TEMP_INVALID;
+  hxTemperature = fields[3][0] ? atoi(fields[3]) : MARAX_TEMP_INVALID;
+  machineHeatingBoost = (n >= 5 && strcmp(fields[4], "0000") == 0);
+  machineHeating = (n >= 6 && fields[5][0] == '1');
+  // Pumpenfeld [6] gibt es nur bei fw 1.06 (7 Felder). fw 1.23 sendet nur 6 Felder
+  // ohne Pumpenstatus -> dann bleibt die serielle Pumpenerkennung wirkungslos.
+  g_serialFrameFields = n;
+  if (n >= 7) {
+    g_serialPumpActive = (fields[6][0] == '1');
+  } else {
+    g_serialPumpActive = false;
+  }
+
   if (millis() - lastTempSampleMs >= 5000 &&
       hxTemperature > MARAX_TEMP_INVALID && steamTemperature > MARAX_TEMP_INVALID) {
     lastTempSampleMs = millis();
@@ -1288,7 +1425,7 @@ void setup() {
   LittleFS.begin(true);
   loadWifiCredentials();
 
-  // Display vor WLAN: bei gespeichertem (falschem) WLAN blockiert tryConnectSta() bis zu 45 s —
+  // Display vor WLAN: bei gespeichertem (falschem) WLAN blockiert tryConnectSta() bis zu 20 s —
   // sonst bleibt der Schirm schwarz, obwohl nur das OLED zum Test angeschlossen ist.
   Wire.begin(I2C_SDA, I2C_SCL);
   Serial.begin(9600);
@@ -1332,7 +1469,10 @@ void loop() {
   detectChanges();
   getMachineInput();
   maybeReconnectWifi();
-  if (g_versionCheckPending && WiFi.status() == WL_CONNECTED && !g_configPortalMode) {
+  // Versions-Check nur bei gesundem Heap: der TLS-Handshake zu GitHub braucht
+  // ~40 KB. Bei knappem Speicher überspringen statt einen Absturz zu riskieren.
+  if (g_versionCheckPending && WiFi.status() == WL_CONNECTED && !g_configPortalMode &&
+      ESP.getFreeHeap() > 70000) {
     g_versionCheckPending = false;
     checkLatestVersion();
   }
@@ -1340,6 +1480,22 @@ void loop() {
     server.handleClient();
   }
   updateMqtt();
+
+  // WLAN-Diagnose alle 5 s über USB-Serial (zum Beobachten von Verbindungsabbrüchen)
+  static unsigned long lastNetDiagMs = 0;
+  if (millis() - lastNetDiagMs >= 5000) {
+    lastNetDiagMs = millis();
+    Serial.print("[NET] sta=");
+    Serial.print(WiFi.status() == WL_CONNECTED ? "verbunden" : "getrennt");
+    Serial.print(" rssi=");
+    Serial.print(WiFi.RSSI());
+    Serial.print("dBm ip=");
+    Serial.print(WiFi.localIP());
+    Serial.print(" heap=");
+    Serial.print(ESP.getFreeHeap());
+    Serial.print(" fallbackAP=");
+    Serial.println(g_fallbackApActive ? "an" : "aus");
+  }
 }
 
 void getMachineInput() {

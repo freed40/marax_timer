@@ -6,6 +6,8 @@ Vor jedem Release Einträge unter **`[Unreleased]`** pflegen. Beim Release versc
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-27
+
 ### Hinzugefügt
 
 - `CHANGELOG.md` und Release-Notes aus Changelog bei GitHub Release
