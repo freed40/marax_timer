@@ -51,6 +51,8 @@
 #include <Wire.h>
 #include <HardwareSerial.h>
 #include <Preferences.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 // Optional: fest im Sketch (nur Ersteinrichtung / ohne NVS). NVS überschreibt dies.
 const char *WIFI_SSID = "";
@@ -67,6 +69,10 @@ const char *OTA_UPDATE_TOKEN = "maraxota";
 
 #define FIRMWARE_VERSION "1.1.0"
 static const char FIRMWARE_BUILT[] = __DATE__ " " __TIME__;
+#define GITHUB_REPO "freed40/marax_timer"
+
+static String g_latestVersion = "";
+static bool g_versionCheckPending = true;
 
 #define MARAX_TEMP_INVALID (-1000)
 
@@ -163,6 +169,28 @@ static void loadWifiCredentials() {
     g_wifiStaSsid = WIFI_SSID;
     g_wifiStaPass = WIFI_PASSWORD;
   }
+}
+
+static void checkLatestVersion() {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+  https.setTimeout(6000);
+  https.begin(client, "https://api.github.com/repos/" GITHUB_REPO "/releases/latest");
+  https.addHeader("User-Agent", "MaraX-Timer/" FIRMWARE_VERSION);
+  if (https.GET() == 200) {
+    String body = https.getString();
+    int i = body.indexOf("\"tag_name\":\"");
+    if (i >= 0) {
+      i += 12;
+      int j = body.indexOf("\"", i);
+      if (j > i) {
+        g_latestVersion = body.substring(i, j);
+        if (g_latestVersion.startsWith("v")) g_latestVersion = g_latestVersion.substring(1);
+      }
+    }
+  }
+  https.end();
 }
 
 static bool wifiCredentialsConfigured() {
@@ -335,6 +363,8 @@ static void setupWebServer() {
   server.on("/api/clear", HTTP_POST, handleClearHistory);
   server.on("/api/set-pump-source", HTTP_POST, handleApiSetPumpSource);
   server.on("/api/set-ap", HTTP_POST, handleApiSetAp);
+  server.on("/api/settings", HTTP_GET, handleApiGetSettings);
+  server.on("/api/settings", HTTP_POST, handleApiPostSettings);
   server.on("/update", HTTP_GET, handleUpdateGet);
   server.on(
       "/update", HTTP_POST,
@@ -451,6 +481,14 @@ static void handleRootPage() {
   html += F("body{font-family:system-ui,sans-serif;max-width:40rem;margin:1rem auto}");
   html += F("table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:.4rem}");
   html += F("th{background:#eee}button{padding:.4rem .8rem;margin-top:.5rem}</style></head><body>");
+  if (g_latestVersion.length() > 0 && g_latestVersion != FIRMWARE_VERSION) {
+    html += F("<div style=\"background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;");
+    html += F("padding:.5rem 1rem;margin-bottom:1rem;font-size:.9rem\">");
+    html += F("&#128257; Update verf&uuml;gbar: <strong>v");
+    html += g_latestVersion;
+    html += F("</strong> &mdash; <a href=\"https://github.com/" GITHUB_REPO "/releases\" target=\"_blank\">");
+    html += F("Releases &rarr;</a></div>");
+  }
   html += F("<h1>MaraX Timer</h1>");
   html += F("<div style=\"background:#f5f5f5;border-radius:8px;padding:.8rem 1rem;margin-bottom:1rem\">");
   html += F("<div style=\"display:flex;justify-content:space-between;align-items:center\">");
@@ -527,10 +565,44 @@ static void handleRootPage() {
   html += F("<a href=\"/api/history.csv\">CSV-Export</a> &middot; ");
   html += F("<a href=\"/wifi\">WLAN</a> &middot; ");
   html += F("<a href=\"/update\">OTA</a></p>");
-  html += F("<p style=\"font-size:.72rem;color:#aaa;text-align:center;margin-top:1rem\">v");
-  html += F(FIRMWARE_VERSION);
-  html += F(" &middot; ");
+  html += F("<details style=\"margin-top:.8rem;font-size:.9rem\">");
+  html += F("<summary style=\"cursor:pointer;color:#555\">Einstellungen sichern / wiederherstellen</summary>");
+  html += F("<p style=\"margin:.5rem 0 .4rem;font-size:.8rem;color:#777\">");
+  html += F("Gesichert wird: WLAN (SSID &amp; Passwort), Ziel-Shotzeit, Ziel-HX-Temperatur, ");
+  html += F("Pump-Quelle (Reed / Seriell), Fallback-AP an/aus.</p>");
+  html += F("<div style=\"margin-top:.6rem;display:flex;gap:.5rem;flex-wrap:wrap\">");
+  html += F("<a href=\"/api/settings\" download=\"marax-settings.json\">");
+  html += F("<button style=\"padding:.35rem .8rem\">&#8681; Exportieren</button></a>");
+  html += F("<label style=\"display:inline-flex;align-items:center;gap:.4rem\">");
+  html += F("<input type=\"file\" id=\"sfile\" accept=\".json\" style=\"display:none\"");
+  html += F(" onchange=\"importSettings(this)\">");
+  html += F("<button style=\"padding:.35rem .8rem\" onclick=\"document.getElementById('sfile').click()\">");
+  html += F("&#8679; Importieren</button></label>");
+  html += F("<span id=\"simsg\" style=\"font-size:.8rem;color:#555;align-self:center\"></span>");
+  html += F("</div></details>");
+  html += F("<script>");
+  html += F("function importSettings(inp){");
+  html += F("var f=inp.files[0];if(!f)return;");
+  html += F("var r=new FileReader();");
+  html += F("r.onload=function(e){");
+  html += F("try{var d=JSON.parse(e.target.result);}catch(ex){");
+  html += F("document.getElementById('simsg').textContent='Fehler: ungültige JSON-Datei';return;}");
+  html += F("var b=new URLSearchParams();");
+  html += F("['ssid','pass','targetShot','targetHx','pumpSource','apEnabled'].forEach(function(k){");
+  html += F("if(d[k]!==undefined)b.append(k,d[k]);});");
+  html += F("document.getElementById('simsg').textContent='Wird gespeichert…';");
+  html += F("fetch('/api/settings',{method:'POST',");
+  html += F("headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b.toString()})");
+  html += F(".then(r=>r.json()).then(d=>{");
+  html += F("document.getElementById('simsg').textContent=d.reboot?'Gespeichert. Neustart…':'Gespeichert.';");
+  html += F("}).catch(()=>document.getElementById('simsg').textContent='Fehler beim Speichern.');};");
+  html += F("r.readAsText(f);}");
+  html += F("</script>");
+  html += F("<p style=\"font-size:.72rem;color:#aaa;text-align:center;margin-top:1rem\">");
+  html += F("v" FIRMWARE_VERSION " &middot; ");
   html += FIRMWARE_BUILT;
+  html += F(" &middot; <a href=\"https://github.com/freed40/marax_timer\" target=\"_blank\" style=\"color:#aaa\">GitHub</a>");
+  html += F(" &middot; <a href=\"https://github.com/freed40/marax_timer/releases\" target=\"_blank\" style=\"color:#aaa\">Releases</a>");
   html += F("</p>");
   html += F("</body></html>");
   server.send(200, "text/html; charset=utf-8", html);
@@ -556,8 +628,10 @@ static void handleUpdateGet() {
       "<style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:1rem auto}"
       "label{display:block;margin:.5rem 0}button{margin-top:1rem;padding:.5rem 1rem}</style>"
       "</head><body><h1>Firmware-Update</h1>"
-      "<p>Binary aus der Arduino-IDE: <em>Sketch &rarr; Export Compiled Binary</em> "
-      "(<code>.bin</code> im Sketch-Ordner).</p>"
+      "<p>Neue Firmware unter "
+      "<a href=\"https://github.com/freed40/marax_timer/releases\" target=\"_blank\">"
+      "github.com/freed40/marax_timer/releases</a> &mdash; "
+      "die Datei <code>timer_esp32.ino.bin</code> herunterladen und hier hochladen.</p>"
       "<form id=\"ota\" method=\"post\" enctype=\"multipart/form-data\">"
       "<label>Token <input type=\"password\" id=\"tok\" required autocomplete=\"off\"></label>"
       "<label>Firmware <input type=\"file\" name=\"firmware\" accept=\".bin\" required></label>"
@@ -683,15 +757,64 @@ static void handleClearHistory() {
   server.send(303);
 }
 
+static void handleApiGetSettings() {
+  String json = "{";
+  json += "\"ssid\":\"" + g_wifiStaSsid + "\"";
+  json += ",\"pass\":\"" + g_wifiStaPass + "\"";
+  json += ",\"targetShot\":" + String(targetShotSeconds);
+  json += ",\"targetHx\":" + String(targetHxTemp);
+  json += ",\"pumpSource\":\"" + String(g_useSerialPump ? "serial" : "reed") + "\"";
+  json += ",\"apEnabled\":" + String(g_apEnabled ? "true" : "false");
+  json += "}";
+  server.sendHeader("Content-Disposition", "attachment; filename=\"marax-settings.json\"");
+  server.send(200, "application/json", json);
+}
+
+static void handleApiPostSettings() {
+  bool wifiChanged = false;
+  if (server.hasArg("ssid") && server.arg("ssid").length() > 0) {
+    g_wifiStaSsid = server.arg("ssid");
+    prefs.putString("ssid", g_wifiStaSsid);
+    wifiChanged = true;
+  }
+  if (server.hasArg("pass")) {
+    g_wifiStaPass = server.arg("pass");
+    prefs.putString("pass", g_wifiStaPass);
+    wifiChanged = true;
+  }
+  if (server.hasArg("targetShot")) {
+    int v = server.arg("targetShot").toInt();
+    if (v >= 5 && v <= 60) { targetShotSeconds = v; prefs.putInt("targshot", v); }
+  }
+  if (server.hasArg("targetHx")) {
+    int v = server.arg("targetHx").toInt();
+    if (v >= 50 && v <= 130) { targetHxTemp = v; prefs.putInt("targhx", v); }
+  }
+  if (server.hasArg("pumpSource")) {
+    g_useSerialPump = (server.arg("pumpSource") == "serial");
+    prefs.putBool("serialpump", g_useSerialPump);
+  }
+  if (server.hasArg("apEnabled")) {
+    String val = server.arg("apEnabled");
+    g_apEnabled = (val != "false" && val != "0");
+    prefs.putBool("apon", g_apEnabled);
+  }
+  if (wifiChanged) {
+    server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+    delay(400);
+    ESP.restart();
+  } else {
+    server.send(200, "application/json", "{\"ok\":true,\"reboot\":false}");
+  }
+}
+
 static void handleApiSetAp() {
   if (!server.hasArg("enabled")) {
     server.send(400, "application/json", "{\"error\":\"missing enabled param\"}");
     return;
   }
   g_apEnabled = (server.arg("enabled") != "0");
-  prefs.begin("marax", false);
   prefs.putBool("apon", g_apEnabled);
-  prefs.end();
   if (g_apEnabled && !g_configPortalMode) {
     WiFi.mode(WIFI_AP_STA);
     if (strlen(CONFIG_AP_PASSWORD) >= 8) {
@@ -710,9 +833,7 @@ static void handleApiSetAp() {
 static void handleApiSetPumpSource() {
   if (server.hasArg("source")) {
     g_useSerialPump = (server.arg("source") == "serial");
-    prefs.begin("marax", false);
     prefs.putBool("serialpump", g_useSerialPump);
-    prefs.end();
     server.send(200, "application/json",
       "{\"ok\":true,\"pumpSource\":\"" + String(g_useSerialPump ? "serial" : "reed") + "\"}");
   } else {
@@ -737,6 +858,7 @@ static void handleApiStatus() {
   json += ",\"ap\":" + String(g_apEnabled ? "true" : "false");
   json += ",\"version\":\"" FIRMWARE_VERSION "\"";
   json += ",\"built\":\"" + String(FIRMWARE_BUILT) + "\"";
+  json += ",\"latestVersion\":\"" + g_latestVersion + "\"";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -1210,6 +1332,10 @@ void loop() {
   detectChanges();
   getMachineInput();
   maybeReconnectWifi();
+  if (g_versionCheckPending && WiFi.status() == WL_CONNECTED && !g_configPortalMode) {
+    g_versionCheckPending = false;
+    checkLatestVersion();
+  }
   if (g_webServerStarted) {
     server.handleClient();
   }

@@ -75,6 +75,16 @@ jobs:
           arduino-cli config set directories.user "$HOME/Arduino"
           mkdir -p "$HOME/Arduino/libraries"
 
+      - name: Timer-Bibliothek (ESP8266 sketch)
+        run: |
+          git clone --depth 1 https://github.com/JChristensen/Timer.git "$HOME/Arduino/libraries/Timer"
+          printf '%s\n' \
+            'name=Timer' 'version=2.0.0' 'author=Jack Christensen' \
+            'maintainer=Jack Christensen' 'sentence=Event-driven timer' \
+            'paragraph=' 'category=Timing' \
+            'url=https://github.com/JChristensen/Timer' 'architectures=*' \
+            > "$HOME/Arduino/libraries/Timer/library.properties"
+
       - name: Core ESP8266 & Bibliotheken
         run: |
           arduino-cli core update-index \

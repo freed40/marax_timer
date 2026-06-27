@@ -1,12 +1,14 @@
 # marax_timer
 
-**[Deutsch](#deutsch)** · **[English](#english)**
+**[Deutsch](#deutsch)** · **[English](#english)** · **[GitHub](https://github.com/freed40/marax_timer)** · **[Releases](https://github.com/freed40/marax_timer/releases)**
 
 ---
 
 <a id="deutsch"></a>
 
 ## Deutsch
+
+> [🇬🇧 English version below](#english)
 
 Shot-Timer und Statusanzeige für die **Lelit Mara X** (z. B. PL62X) und ähnliche Maschinen mit **Vibrationspumpe**. Das OLED-Display zeigt Laufzeit, Brühkreis-/Dampftemperaturen und Heizstatus. Steuerung und OTA-Updates über den Browser. Basiert auf **[espresso_timer](https://github.com/alexrus/espresso_timer)**.
 
@@ -262,6 +264,40 @@ AP ein-/ausschalten: `/test` → Button **„AP aus/an"** oder `POST /api/set-ap
 | Reed-Sensor zu empfindlich | Blaues Poti auf dem Sensor-Modul justieren |
 | Pumpe im Seriell-Modus nicht erkannt | UART-Rohdaten auf `/test` prüfen — Byte 25 muss `0` oder `1` sein |
 
+### Speicher & Grenzen (ESP32)
+
+Der ESP32 DevKit V1 hat zwei voneinander unabhängige Speicher:
+
+| Speicher | Gesamt | Aktuell belegt | Wofür |
+|----------|--------|----------------|-------|
+| **Flash** (Programm) | 1.280 KB | ~915 KB (**71 %**) | Sketch-Code + Bibliotheken |
+| **RAM** (global) | 320 KB | ~49 KB (**15 %**) | Globale Variablen, Puffer |
+
+> Aktuellen Stand immer mit `arduino-cli compile --fqbn esp32:esp32:esp32 timer_esp32/` prüfen — die letzten zwei Zeilen zeigen die Auslastung.
+
+#### Wann wird es eng?
+
+**Flash > 90 %:** Der Sketch lässt sich zwar noch flashen, aber es bleibt kaum Puffer für Erweiterungen. OTA schlägt fehl wenn die Binary größer als die OTA-Partition ist (~640 KB bei manchen Partition-Schemas — beim Standard-Schema mit zwei gleich großen App-Partitionen à 1.28 MB sind wir sicher).
+
+**RAM > 80 %:** Gefährlich. Der restliche Speicher wird dynamisch für den Web-Server, JSON-Strings, HTML-Antworten und den WiFi-Stack genutzt. Zu wenig freier Heap führt zu zufälligen Abstürzen oder hängenden Requests.
+
+#### Was viel Speicher kostet
+
+| Feature | Flash | RAM |
+|---------|-------|-----|
+| Adafruit SSD1306 + GFX | ~100 KB | ~1 KB |
+| WebServer (ESP32) | ~50 KB | Heap pro Request |
+| LittleFS | ~30 KB | ~4 KB |
+| PubSubClient (MQTT) | ~20 KB | ~5 KB |
+| Jede HTML-Seite (F-Makro) | im Flash | 0 RAM |
+| String-Konkatenation | 0 Flash | temporär Heap |
+
+#### Tipps wenn Flash knapp wird
+
+- HTML-Seiten mit `F(...)` wrappen (bereits umgesetzt) — speichert Strings im Flash statt im RAM
+- Ungenutzte Features (`MQTT_BROKER` leer lassen) kompiliert der Linker meist trotzdem mit — für echte Einsparung Code entfernen
+- ESP8266-Sketch hat weniger Features, passt auf kleinerem Flash
+
 ### Lizenz & Quellen
 
 Siehe [LICENSE](LICENSE).
@@ -277,6 +313,8 @@ Siehe [LICENSE](LICENSE).
 <a id="english"></a>
 
 ## English
+
+> [🇩🇪 Deutsche Version oben](#deutsch)
 
 Shot timer and status display for the **Lelit Mara X** (e.g. PL62X) and similar machines with a **vibration pump**. The OLED shows shot time, brew/steam temperatures, and heating status. Fully configurable and updatable via browser. Based on **[espresso_timer](https://github.com/alexrus/espresso_timer)**.
 
@@ -531,6 +569,40 @@ Set `MQTT_BROKER` in the sketch. Topics (compatible with [alexander-heimbuch/mar
 | Flash fails | Hold BOOT during upload, or baud rate `115200` |
 | Reed sensor too sensitive | Adjust the blue potentiometer on the sensor module |
 | Pump not detected in serial mode | Check UART raw data on `/test` — byte 25 must be `0` or `1` |
+
+### Memory & limits (ESP32)
+
+The ESP32 DevKit V1 has two independent memory regions:
+
+| Memory | Total | Currently used | Purpose |
+|--------|-------|----------------|---------|
+| **Flash** (program) | 1,280 KB | ~915 KB (**71 %**) | Sketch code + libraries |
+| **RAM** (global) | 320 KB | ~49 KB (**15 %**) | Global variables, buffers |
+
+> Always check current usage with `arduino-cli compile --fqbn esp32:esp32:esp32 timer_esp32/` — the last two lines show the numbers.
+
+#### When does it get tight?
+
+**Flash > 90 %:** The sketch still compiles and flashes, but there's little room for extensions. OTA fails if the binary exceeds the OTA partition size — with the default partition scheme (two equal app partitions of ~1.28 MB each) we are well within limits.
+
+**RAM > 80 %:** Dangerous. The remaining heap is used dynamically for web server responses, JSON strings, HTML pages, and the WiFi stack. Too little free heap causes random crashes or hanging requests.
+
+#### What uses the most memory
+
+| Feature | Flash | RAM |
+|---------|-------|-----|
+| Adafruit SSD1306 + GFX | ~100 KB | ~1 KB |
+| WebServer (ESP32) | ~50 KB | heap per request |
+| LittleFS | ~30 KB | ~4 KB |
+| PubSubClient (MQTT) | ~20 KB | ~5 KB |
+| HTML pages (with `F()`) | in flash | 0 RAM |
+| String concatenation | 0 flash | temporary heap |
+
+#### Tips when flash gets tight
+
+- Wrap string literals with `F(...)` — stores them in flash instead of RAM (already done throughout)
+- Leaving `MQTT_BROKER` empty does not save flash — to actually reduce size, remove the code
+- The ESP8266 sketch has fewer features and fits on smaller flash
 
 ### License & sources
 
