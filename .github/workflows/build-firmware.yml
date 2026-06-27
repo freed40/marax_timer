@@ -1,9 +1,7 @@
 # Firmware mit arduino-cli bauen. Artefakte: .bin für USB-Flash & Web-OTA.
 #
-# ESP32-FQBN: esp32:esp32:esp32 (= „ESP32 Dev Module“ im Core ≥ 3.x; ältere Kerne
-#   nutzten esp32dev). ESP8266: Board-Paket über package_esp8266com_index.json.
-#
-# Bei Push eines Tags v* (z. B. v1.0.0): zusätzlich GitHub Release mit den Binaries.
+# ESP32 Core 2.0.17 wird gepinnt (neuere Versionen laden >500 MB RISC-V Toolchain).
+# Bei Push eines Tags v* (z. B. v1.2.0): GitHub Release mit .bin Dateien.
 
 name: Firmware bauen
 
@@ -35,27 +33,12 @@ jobs:
           arduino-cli config set directories.user "$HOME/Arduino"
           mkdir -p "$HOME/Arduino/libraries"
 
-      - name: Timer-Bibliothek (JChristensen, mit library.properties)
-        run: |
-          git clone --depth 1 https://github.com/JChristensen/Timer.git "$HOME/Arduino/libraries/Timer"
-          printf '%s\n' \
-            'name=Timer' \
-            'version=2.0.0' \
-            'author=Jack Christensen' \
-            'maintainer=Jack Christensen' \
-            'sentence=Event-driven timer' \
-            'paragraph=' \
-            'category=Timing' \
-            'url=https://github.com/JChristensen/Timer' \
-            'architectures=*' \
-            > "$HOME/Arduino/libraries/Timer/library.properties"
-
-      - name: Core ESP32 & Bibliotheken
+      - name: Core ESP32 2.0.17 & Bibliotheken
         run: |
           arduino-cli core update-index \
-            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli core install esp32:esp32 \
-            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+            --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core install esp32:esp32@2.0.17 \
+            --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli lib install \
             "Adafruit SSD1306" \
             "Adafruit GFX Library" \
@@ -92,21 +75,6 @@ jobs:
           arduino-cli config set directories.user "$HOME/Arduino"
           mkdir -p "$HOME/Arduino/libraries"
 
-      - name: Timer-Bibliothek
-        run: |
-          git clone --depth 1 https://github.com/JChristensen/Timer.git "$HOME/Arduino/libraries/Timer"
-          printf '%s\n' \
-            'name=Timer' \
-            'version=2.0.0' \
-            'author=Jack Christensen' \
-            'maintainer=Jack Christensen' \
-            'sentence=Event-driven timer' \
-            'paragraph=' \
-            'category=Timing' \
-            'url=https://github.com/JChristensen/Timer' \
-            'architectures=*' \
-            > "$HOME/Arduino/libraries/Timer/library.properties"
-
       - name: Core ESP8266 & Bibliotheken
         run: |
           arduino-cli core update-index \
@@ -140,13 +108,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Artefakte laden
+      - name: Artefakt ESP32 laden
         uses: actions/download-artifact@v4
         with:
           name: firmware-esp32
           path: assets/esp32
 
-      - name: Artefakte laden (ESP8266)
+      - name: Artefakt ESP8266 laden
         uses: actions/download-artifact@v4
         with:
           name: firmware-esp8266

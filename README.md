@@ -1,237 +1,543 @@
 # marax_timer
 
-Shot-Timer und Statusanzeige für die **Lelit Mara X** (z. B. PL62X) und ähnliche Maschinen mit **Vibrationspumpe**. Das Display zeigt Laufzeit, Brühkreis-/Dampftemperaturen und Heizstatus (sofern die Maschine per UART Daten liefert). Die Logik basiert auf dem Projekt **[espresso_timer](https://github.com/alexrus/espresso_timer)** (Community-Umschreibung mit klarerer Doku).
+**[Deutsch](#deutsch)** · **[English](#english)**
 
 ---
 
-## In diesem Repository
+<a id="deutsch"></a>
+
+## Deutsch
+
+Shot-Timer und Statusanzeige für die **Lelit Mara X** (z. B. PL62X) und ähnliche Maschinen mit **Vibrationspumpe**. Das OLED-Display zeigt Laufzeit, Brühkreis-/Dampftemperaturen und Heizstatus. Steuerung und OTA-Updates über den Browser. Basiert auf **[espresso_timer](https://github.com/alexrus/espresso_timer)**.
+
+### In diesem Repository
 
 | Sketch | Plattform | Ordner | Kurzbeschreibung |
 |--------|-----------|--------|------------------|
-| **Klassisch** | ESP8266 (z. B. NodeMCU) | [`timer/`](timer/) | Original-Flow: WiFi aus, `SoftwareSerial` zur Mara X |
-| **ESP32** | ESP32 DevKit V1 | [`timer_esp32/`](timer_esp32/) | Wie oben; **WLAN per Browser** (NVS + Konfig-AP), **Web** inkl. **Shot-Verlauf** (LittleFS), optional **MQTT / Home Assistant** |
+| **ESP32** | ESP32 DevKit V1 | [`timer_esp32/`](timer_esp32/) | WLAN per Browser, Weboberfläche, Shot-Verlauf, MQTT, OTA |
+| **Klassisch** | ESP8266 (NodeMCU) | [`timer/`](timer/) | WiFi aus, SoftwareSerial zur Mara X |
 
-In der **Arduino IDE** jeweils den **Sketch-Ordner** öffnen (pro Ordner nur eine `.ino`-Datei).
+### Funktionsweise
 
----
+Der Timer kann auf zwei Arten ausgelöst werden — umschaltbar per Weboberfläche ohne erneutes Flashen:
 
-## Funktionsweise
+- **Reed-Sensor-Modus** (Standard): Ein Reed-Sensor am Pumpenkörper erkennt das Magnetfeld der laufenden Pumpe.
+- **Seriell-Modus**: Der Pumpenstatus wird direkt aus den UART-Daten der Mara X gelesen (Byte 25 im Frame `C1.06,116,124,093,0840,1,0`). Kein Reed-Sensor notwendig.
 
-- **Reed-Sensor** am Gehäuse der Vibrationspumpe: Sobald die Pumpe läuft und der Kontakt auslöst, startet der **Timer nach oben**. Nach Ende des Pumpvorgangs (Kontakt weg, kurze Entprellung) **stoppt** die Anzeige und zeigt die Zeit **weiter an** (wie im Original).
-- **Kurze Pumpstöße** der Mara X (z. B. Boiler-Nachfüllen) unter **ca. 15 Sekunden** werden **nicht** dauerhaft als „Shot“ gespeichert bzw. für die Daueranzeige verwendet — damit bleibt die Anzeige nicht von Refill-Zyklen „verstellt“.
-- Nach **ca. 1 Stunde** ohne Pumpaktivität kann das Display in den **Ruhezustand** wechseln; die nächste Pumpenaktivität weckt es wieder (siehe Sketch-Logik).
-- **Serielle Verbindung zur Mara X**: Es werden periodisch Anfragen gesendet (`0x11`); die Maschine antwortet mit einer Textzeile, aus der u. a. Temperaturen und Betriebsart gelesen werden — wie im Ursprungsprojekt.
+Shots unter 15 Sekunden (z. B. Boiler-Nachfüllen) werden nicht gespeichert. Nach 1 Stunde Inaktivität wechselt das Display in den Ruhezustand.
 
----
+### Hardware
 
-## Hardware
+#### Gemeinsam
 
-### Gemeinsam
-
-- **0,96″ OLED**, SSD1306, I²C (4 Anschlüsse üblich)
-- **Reed-Sensor** (NO/NC je nach Typ; ggf. Variable `reedOpenSensor` im Sketch anpassen)
-- Kabel; optional **Gehäuse** z. B. von [Thingiverse](https://www.thingiverse.com/thing:2937731)
-
-Reed typischerweise am **Pumpenkörper** anbringen (Magnetfeld der laufenden Pumpe schaltet den Kontakt):
+- **0,96″ OLED**, SSD1306, I²C (4 Pins: VCC, GND, SDA, SCL)
+- **Reed-Sensor-Modul** (4 Pins: +, G, D0, A0) — typisch NO-Typ, optional im Seriell-Modus
+- Reed am **Pumpenkörper** anbringen — das Magnetfeld der laufenden Pumpe schaltet den Kontakt:
 
 ![](resources/pump.jpg)
 
-### ESP8266 (`timer/`)
+#### ESP32 DevKit V1 — Pinbelegung
 
-- **Board:** NodeMCU o. Ä., getestet u. a. mit **NodeMCU V2 (CP2102)**
-- **OLED:** wie in vielen Anleitungen für NodeMCU (D2/D1 für I²C je nach Beschriftung — im Originalsketch `Wire` ohne explizite Pinzuweisung für NodeMCU-Defaults)
-- **Reed:** ein Anschluss an **GND**, Signal an **D7** (GPIO 13 laut `#define`)
-- **Mara X 6-polig (Unterseite):** Maschine **Pin 3 (RX)** → NodeMCU **D6 (TX)**; Maschine **Pin 4 (TX)** → NodeMCU **D5 (RX)**. **Tausch** von D5/D6 versuchen, falls keine Daten ankommen.
+| Komponente | Modul-Pin | ESP32-Pin | Hinweis |
+|------------|-----------|-----------|---------|
+| Reed-Modul | **+** | **3,3 V** | Versorgung |
+| Reed-Modul | **G** | **GND** | |
+| Reed-Modul | **D0** | **GPIO 18** | Digitalsignal, Interrupt |
+| Reed-Modul | **A0** | — | nicht belegt |
+| OLED | **VCC** | **3,3 V** | |
+| OLED | **GND** | **GND** | |
+| OLED | **SDA** | **GPIO 21** | I²C Daten |
+| OLED | **SCL** | **GPIO 22** | I²C Takt |
+| Mara X Pin 3 (RX) | — | **GPIO 12** | UART TX vom ESP |
+| Mara X Pin 4 (TX) | — | **GPIO 14** | UART RX zum ESP |
 
-Schemabild OLED/NodeMCU (Pinreihenfolge am Modul beachten):
+> **OLED-Adresse:** Die meisten 128×64-Module verwenden `0x3C`. Bei schwarzem Display `SSD1306_I2C_ADDR` auf `0x3D` ändern.
 
-![](https://circuits4you.com/wp-content/uploads/2019/01/NodeMCU_ESP8266_OLED_Display.png)
+> **Mara X UART:** Der 6-polige Stecker sitzt an der Unterseite der Maschine. Falls keine Daten ankommen, RX/TX tauschen (GPIO 12 ↔ GPIO 14).
 
-### ESP32 DevKit V1 (`timer_esp32/`)
+> **GPIO 12:** Strapping-Pin — bei Boot-Problemen einen anderen freien Pin verwenden und `MARAX_TX` im Sketch anpassen.
 
-| Signal | Anschluss |
-|--------|-----------|
-| Reed-Modul **VCC** | **3,3 V** |
-| Reed **GND** | **GND** |
-| Reed **D0** | **GPIO 18** (Interrupt `CHANGE`) |
-| Reed **A0** | unbelegt |
-| OLED **SDA** | **GPIO 21** |
-| OLED **SCL** | **GPIO 22** |
-| Mara X **RX** (Pin 3) | ESP32 **GPIO 12** (UART TX der MCU) |
-| Mara X **TX** (Pin 4) | ESP32 **GPIO 14** (UART RX der MCU) |
+#### ESP8266 NodeMCU — Pinbelegung
 
-**Hinweis:** GPIO 12 ist beim ESP32 ein Strapping-Pin; am Original-NodeMCU war diese Leitung ebenfalls belegt. Bei seltsamen Boot-Problemen alternativ andere freie Pins wählen und `MARAX_RX` / `MARAX_TX` im Sketch anpassen.
+| Komponente | NodeMCU-Pin | GPIO |
+|------------|-------------|------|
+| Reed Signal | D7 | GPIO 13 |
+| OLED SDA | D2 | GPIO 4 |
+| OLED SCL | D1 | GPIO 5 |
+| Mara X RX | D6 | GPIO 12 |
+| Mara X TX | D5 | GPIO 14 |
+
+### OLED-Display
+
+**Leerlauf** — zweigeteilte Ansicht (Trennlinie bei x=63):
+
+| Links | Rechts |
+|-------|--------|
+| Kaffeetassen-Icon mit Dampfkringeln | `Zeit:XX` |
+| HX-Temperatur groß | Dampfwolken-Icon |
+| | Dampftemperatur |
+
+**Shot läuft:**
+- Erste 5 Sekunden: `-- Pre-Infusion --` als Kopfzeile, Tasse links, Timer rechts
+- Ab 5 Sekunden: Tasse links, großer Timer rechts
+
+Das OLED wechselt alle 10 Sekunden zwischen Normalanzeige und Temperatur-Sparkline (nur im Leerlauf).
+
+### Software-Installation (arduino-cli)
+
+#### 1. arduino-cli installieren
+
+```bash
+brew install arduino-cli
+```
+
+#### 2. ESP32-Board-Paket einrichten
+
+```bash
+arduino-cli config init
+arduino-cli config add board_manager.additional_urls \
+  https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32@2.0.17
+```
+
+> Version 2.0.17 empfohlen — neuere Versionen laden einen großen RISC-V-Toolchain nach (>500 MB), der für den Standard-ESP32 nicht benötigt wird.
+
+#### 3. Bibliotheken installieren
+
+```bash
+arduino-cli lib install "Adafruit SSD1306" "Adafruit GFX Library" "PubSubClient"
+```
+
+#### 4. Kompilieren
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32 timer_esp32/
+```
+
+#### 5. Flashen (USB)
+
+```bash
+arduino-cli upload -p /dev/cu.usbserial-XXX \
+  --fqbn esp32:esp32:esp32:UploadSpeed=460800 timer_esp32/
+```
+
+Port auf macOS: `/dev/cu.usbserial-*` — mit `ls /dev/cu.usb*` prüfen.  
+Bei Fehler `Unable to verify flash chip connection`: BOOT-Taste halten während Upload startet, oder Baudrate auf `115200` reduzieren.
+
+### Firmware-Update ohne Kabel (OTA)
+
+Sobald der ESP32 einmal per USB geflasht und im WLAN ist, können alle weiteren Updates kabellos per Browser eingespielt werden.
+
+**WLAN bleibt erhalten:** Die NVS-Partition wird von OTA nicht überschrieben — SSID, Passwort und alle gespeicherten Einstellungen (Pump-Modus, Zielwerte, AP-Status) bleiben nach jedem Update erhalten.
+
+#### Binary erstellen
+
+```bash
+arduino-cli compile \
+  --fqbn esp32:esp32:esp32 \
+  --export-binaries \
+  timer_esp32/
+# Datei: timer_esp32/build/esp32.esp32.esp32/timer_esp32.ino.bin
+```
+
+#### Im Browser hochladen
+
+1. Browser öffnen: **`http://marax.local/update`**
+2. **Token** eingeben (Wert von `OTA_UPDATE_TOKEN` im Sketch, Standard: `maraxota`)
+3. **Datei wählen** → die `.bin` aus dem Build-Schritt
+4. **Hochladen** → ESP32 startet automatisch neu
+
+#### GitHub Actions
+
+Bei jedem Push auf `main` wird automatisch kompiliert. Bei einem Tag `v*` wird ein GitHub Release mit der Binary erstellt:
+
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+```
+
+Artifacts: Actions → Lauf → `firmware-esp32`
+
+#### Fehlersuche OTA
+
+| Problem | Lösung |
+|---------|--------|
+| `/update` zeigt „OTA deaktiviert" | `OTA_UPDATE_TOKEN` setzen, per USB flashen |
+| Upload schlägt fehl | Nur `timer_esp32.ino.bin` verwenden, nicht `bootloader.bin` |
+| Seite nicht erreichbar nach Update | `http://marax.local/` versuchen oder IP im Router nachschlagen |
+
+### Konfiguration im Sketch
+
+| Variable | Standard | Beschreibung |
+|----------|----------|--------------|
+| `WIFI_SSID` / `WIFI_PASSWORD` | `""` | Optional: WLAN fest im Sketch (sonst per Browser) |
+| `CONFIG_AP_PASSWORD` | `"maraxsetup"` | Passwort für den Konfig-AP (min. 8 Zeichen) |
+| `OTA_UPDATE_TOKEN` | `""` | Token für Web-OTA — leer = OTA gesperrt |
+| `MQTT_BROKER` | `""` | IP/Hostname des MQTT-Brokers |
+| `reedOpenSensor` | `true` | `true` = NO-Sensor, `false` = NC-Sensor |
+| `SSD1306_I2C_ADDR` | `0x3C` | I²C-Adresse des Displays |
+
+### Weboberfläche (ESP32)
+
+Nach dem Start im Heimnetz erreichbar unter `http://marax.local/` oder der IP-Adresse.
+
+#### Seiten
+
+| URL | Funktion |
+|-----|----------|
+| `/` | Hauptseite: Live-Pumpenstatus, Shot-Verlauf, Ziel-Einstellungen |
+| `/test` | **Diagnose:** Reed, Pumpe, Temperaturen, Pump-Quelle, AP-Status, UART-Rohdaten |
+| `/temps` | Temperatur-Graph (Canvas, 10 Min. Verlauf) |
+| `/wifi` | WLAN ändern inkl. **Netzwerk-Scan mit Signalstärke** |
+| `/update` | Firmware per Browser (OTA) — nur mit gesetztem Token |
+
+#### API-Endpunkte
+
+| Endpunkt | Methode | Beschreibung |
+|----------|---------|--------------|
+| `/api/status` | GET | JSON: Pumpe, Timer, Reed, Temp., Pump-Quelle, AP-Status, Demo |
+| `/api/history` | GET | JSON: Shot-Verlauf |
+| `/api/history.csv` | GET | CSV-Download des Shot-Verlaufs |
+| `/api/temp-history` | GET | JSON: Temperatur-Ringpuffer (120 Messpunkte × 5 s) |
+| `/api/wifi-scan` | GET | JSON: verfügbare WLAN-Netzwerke mit RSSI |
+| `/api/set-target` | POST | `shot=27&hx=93` — Zielwerte speichern |
+| `/api/set-pump-source` | POST | `source=reed` oder `source=serial` — Pump-Quelle umschalten |
+| `/api/set-ap` | POST | `enabled=1` oder `enabled=0` — Fallback-AP ein/ausschalten |
+| `/api/demo` | POST | Demo-Modus umschalten |
+| `/api/clear` | POST | Shot-Verlauf löschen |
+
+#### Erste WLAN-Einrichtung
+
+1. ESP32 startet als Access Point **`MaraX-Timer`** (Passwort: `maraxsetup`)
+2. Mit Handy/PC verbinden → Browser: `http://192.168.4.1/`
+3. Heim-WLAN aus der Liste wählen, Passwort eingeben, speichern
+4. ESP32 startet neu — neue IP im Router-DHCP oder `http://marax.local/`
+
+### Pump-Quelle umschalten
+
+```bash
+# Auf Seriell-Modus umschalten (kein Reed-Sensor notwendig)
+curl -X POST "http://marax.local/api/set-pump-source?source=serial"
+
+# Zurück auf Reed
+curl -X POST "http://marax.local/api/set-pump-source?source=reed"
+```
+
+Die Einstellung wird in NVS gespeichert und überlebt OTA-Updates und Neustarts. Umschalten auch über `/test` im Browser möglich.
+
+### Fallback-AP
+
+Der ESP32 betreibt parallel zum Heimnetz einen eigenen WLAN-Hotspot (`MaraX-Timer`), über den Diagnose (`/test`) und OTA (`/update`) immer erreichbar sind — auch wenn das Heimnetz nicht verfügbar ist.
+
+| Situation | Verhalten |
+|-----------|-----------|
+| Heimnetz verbunden, AP aktiv | `marax.local` **und** `192.168.4.1` erreichbar |
+| Heimnetz verbunden, AP deaktiviert | Nur `marax.local` |
+| Heimnetz nicht verfügbar | Konfig-AP startet immer automatisch (nicht abschaltbar) |
+
+AP ein-/ausschalten: `/test` → Button **„AP aus/an"** oder `POST /api/set-ap?enabled=0`.
+
+### MQTT / Home Assistant
+
+`MQTT_BROKER` im Sketch setzen. Topics (kompatibel mit [alexander-heimbuch/marax_timer](https://github.com/alexander-heimbuch/marax_timer)):
+
+| Topic | Werte |
+|-------|-------|
+| `/marax/pump` | `on` / `off` |
+| `/marax/hx` | Temperatur in °C |
+| `/marax/steam` | Temperatur in °C |
+| `/marax/shot` | Dauer in Sekunden |
+| `/marax/machineheating` | `on` / `off` |
+| `/marax/machineheatingboost` | `on` / `off` |
+
+### Fehlersuche
+
+| Problem | Lösung |
+|---------|--------|
+| Timer startet von allein | `reedOpenSensor = false` setzen (NC-Sensor) |
+| Timer reagiert nicht | `reedOpenSensor = true` setzen (NO-Sensor) |
+| Display bleibt schwarz | I²C-Adresse prüfen: `0x3C` oder `0x3D` |
+| Keine Mara X-Daten | GPIO 12 und 14 tauschen |
+| Flash schlägt fehl | BOOT-Taste halten beim Upload, oder Baudrate auf `115200` |
+| Reed-Sensor zu empfindlich | Blaues Poti auf dem Sensor-Modul justieren |
+| Pumpe im Seriell-Modus nicht erkannt | UART-Rohdaten auf `/test` prüfen — Byte 25 muss `0` oder `1` sein |
+
+### Lizenz & Quellen
+
+Siehe [LICENSE](LICENSE).
+
+- [alexrus / espresso_timer](https://github.com/alexrus/espresso_timer)
+- [alexander-heimbuch / marax_timer](https://github.com/alexander-heimbuch/marax_timer)
+- [SaibotFlow / marax-monitor](https://github.com/SaibotFlow/marax-monitor) — Protokoll-Referenz serieller Pump-Status
+- [Home-Barista Forum](https://www.home-barista.com/espresso-machines/lelit-marax-t61215-350.html#p723763)
+- [YouTube](https://www.youtube.com/watch?v=e9FXYfr5ro4&t=526s)
 
 ---
 
-## Software & Bibliotheken (Arduino IDE)
+<a id="english"></a>
 
-### ESP8266
+## English
 
-Board-Paket und Ersteinrichtung z. B. nach:  
-[Quick Start NodeMCU ESP8266 in der Arduino IDE](https://www.instructables.com/id/Quick-Start-to-Nodemcu-ESP8266-on-Arduino-IDE/)
+Shot timer and status display for the **Lelit Mara X** (e.g. PL62X) and similar machines with a **vibration pump**. The OLED shows shot time, brew/steam temperatures, and heating status. Fully configurable and updatable via browser. Based on **[espresso_timer](https://github.com/alexrus/espresso_timer)**.
 
-### ESP32
+### What's in this repository
 
-Board **„ESP32 Dev Module“** (oder passendes Paket) installieren, dann den Sketch `timer_esp32` öffnen und flashen.
+| Sketch | Platform | Folder | Summary |
+|--------|----------|--------|---------|
+| **ESP32** | ESP32 DevKit V1 | [`timer_esp32/`](timer_esp32/) | WiFi via browser, web UI, shot history, MQTT, OTA |
+| **Classic** | ESP8266 (NodeMCU) | [`timer/`](timer/) | No WiFi, SoftwareSerial to Mara X |
 
-### Abhängigkeiten (beide Varianten, je nach Sketch)
+### How it works
 
-- [Adafruit SSD1306](https://github.com/adafruit/Adafruit_SSD1306)
-- [Adafruit GFX](https://github.com/adafruit/Adafruit-GFX-Library)
-- [Adafruit BusIO](https://github.com/adafruit/Adafruit_BusIO)
-- [JChristensen Timer](https://github.com/JChristensen/Timer)
+The timer can be triggered in two ways — switchable via the web UI without re-flashing:
 
-Zusätzlich **nur für `timer_esp32`**:
+- **Reed sensor mode** (default): A reed switch mounted on the pump body detects the pump's magnetic field.
+- **Serial mode**: Pump state is read directly from the Mara X UART data stream (byte 25 in the frame `C1.06,116,124,093,0840,1,0`). No reed sensor required.
 
-- [PubSubClient](https://github.com/knolleary/pubsubclient) (nur bei MQTT)
+Shots under 15 seconds (e.g. boiler refills) are not saved. After 1 hour of inactivity the display enters sleep mode.
 
-**Partitionsschema (Arduino IDE):** für den **lokalen Shot-Verlauf** muss **LittleFS** auf dem ESP32 vorhanden sein. Unter *Tools → Partition Scheme* z. B. **„Default 4MB with spiffs“** durch eine Variante mit **FFat/LittleFS** ersetzen oder **„Huge APP“** nur nutzen, wenn du keinen Flash-Dateispeicher brauchst — ohne LittleFS-Partition schlägt `LittleFS.begin()` fehl (History/Web können ausfallen). Gängig: **Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)** auf Core-Versionen, die SPIFFS abbilden, oder explizit **LittleFS** wählen, so wie es dein **esp32**-Board-Paket anbietet.
+### Hardware
 
-### Build, Upload & neue Firmware-Versionen (ESP32)
+#### Common parts
 
-Für stabile **OTA-Updates** dieselben **Arduino-T**ools-Einstellungen (Board, **Partitionsschema**, Flash-Größe, ggf. CPU-Takt) wie beim **ersten** USB-Flash beibehalten — sonst kann nach einem Web-Update der Start scheitern.
+- **0.96″ OLED**, SSD1306, I²C (4 pins: VCC, GND, SDA, SCL)
+- **Reed sensor module** (4 pins: +, G, D0, A0) — typically NO type, optional in serial mode
+- Mount the reed on the **pump body** — the running pump's magnetic field closes the contact:
 
-#### 1. Ersteinrichtung Arduino IDE
+![](resources/pump.jpg)
 
-1. **ESP32-Board-Paket** installieren (vgl. offizielle Espressif-Doku zur Arduino IDE).
-2. **Tools** z. B.  
-   **Board:** *ESP32 Dev Module* (oder dein konkretes Board)  
-   **Partition Scheme:** Variante **mit** Dateisystem für LittleFS (siehe Absatz oben)  
-   **Upload Speed:** 921600; bei Timeouts **115200**  
-   **Port:** USB‑Seriell des ESP (`COM…` / `ttyUSB…` / `cu.usbserial…`).
-3. Bibliotheken aus der Liste oben einbinden.
+#### ESP32 DevKit V1 — pinout
 
-#### 2. Erster Upload per USB
+| Component | Module pin | ESP32 pin | Notes |
+|-----------|------------|-----------|-------|
+| Reed module | **+** | **3.3 V** | Power |
+| Reed module | **G** | **GND** | |
+| Reed module | **D0** | **GPIO 18** | Digital signal, interrupt |
+| Reed module | **A0** | — | not used |
+| OLED | **VCC** | **3.3 V** | |
+| OLED | **GND** | **GND** | |
+| OLED | **SDA** | **GPIO 21** | I²C data |
+| OLED | **SCL** | **GPIO 22** | I²C clock |
+| Mara X pin 3 (RX) | — | **GPIO 12** | UART TX from ESP |
+| Mara X pin 4 (TX) | — | **GPIO 14** | UART RX to ESP |
 
-1. Ordner **`timer_esp32`** öffnen.
-2. Optional **`OTA_UPDATE_TOKEN`** und **`CONFIG_AP_PASSWORD`** setzen (mindestens einmal per USB flashen, damit **/update** und der Konfig-AP wie gewünscht sind).
-3. **Hochladen** warten bis der Upload fertig ist.
-4. **Serieller Monitor** mit **9600 Baud** (wie `Serial.begin` im Sketch) nutzen.
+> **OLED address:** Most 128×64 modules use `0x3C`. If the display stays blank, set `SSD1306_I2C_ADDR` to `0x3D`.
 
-#### 3. Neue Version erstellen & Binary für OTA
+> **Mara X UART:** The 6-pin connector is on the underside of the machine. If you get no data, swap RX/TX (GPIO 12 ↔ GPIO 14).
 
-1. Änderungen speichern, **Sketch → Kompilieren** (Kompilierung fehlerfrei).
-2. **Version dokumentieren:** z. B. Datum + Kurztext im Commit; mit **Git** zusätzlich **Tag** wie `v1.2.0` empfehlenswert.
-3. **Sketch → Kompiliertes Binary exportieren** (*Export Compiled Binary*). Im Ordner **`timer_esp32/`** erscheint u. a. **`timer_esp32.ino.bin`** — diese Datei typischerweise für **/update** verwenden (die **Anwendungs-Firmware**, nicht eine separate reine Bootloader-`.bin`, falls die IDE mehrere Dateien erzeugt). Bei Unsicherheit die vom Core erzeugte Haupt-App-Binary laut [Espressif-/Core-Doku](https://docs.espressif.com/projects/arduino-esp32/) zum Export prüfen.
-4. Binary sinnvoll umbenennen/archivieren, z. B. `marax_timer_esp32_2026-04-01.bin`.
+> **GPIO 12:** ESP32 strapping pin — if boot fails, use another free pin and adjust `MARAX_TX` in the sketch.
 
-#### 4. OTA im Browser
+#### ESP8266 NodeMCU — pinout
 
-Gerät im Heim-WLAN oder am Konfig-AP, **`OTA_UPDATE_TOKEN`** aktiv.
+| Component | NodeMCU pin | GPIO |
+|-----------|-------------|------|
+| Reed signal | D7 | GPIO 13 |
+| OLED SDA | D2 | GPIO 4 |
+| OLED SCL | D1 | GPIO 5 |
+| Mara X RX | D6 | GPIO 12 |
+| Mara X TX | D5 | GPIO 14 |
 
-1. **`http://<IP>/update`** öffnen (siehe nächster Unterabschnitt).
-2. Token setzen, die erzeugte **`.bin`** hochladen, Neustart abwarten.
+### OLED Display
 
-Schlägt OTA fehl: **USB-Flasher** mit gleichem Partitionsschema.
+**Idle** — two-column layout (divider at x=63):
 
-#### 5. ESP8266 (`timer/`)
+| Left | Right |
+|------|-------|
+| Coffee cup icon with steam wisps | `Time:XX` |
+| HX temperature (large) | Steam cloud icon |
+| | Steam temperature |
 
-Hier üblicherweise **nur USB-Upload** (Board *NodeMCU*, Port wählen, Hochladen). **Kein** Web-OTA in diesem Sketch.
+**Shot running:**
+- First 5 seconds: `-- Pre-Infusion --` header, cup left, timer right
+- After 5 seconds: cup left, large timer right
 
-#### 6. Automatischer Build mit GitHub Actions
+The OLED alternates between the normal view and a temperature sparkline every 10 seconds (idle only).
 
-Im Repository liegt **[`.github/workflows/build-firmware.yml`](.github/workflows/build-firmware.yml)**. Bei **Push** auf `main`, **Pull Requests** und manuell (**Actions → „Firmware bauen“ → Run workflow**) werden mit **arduino-cli** die Sketches **`timer_esp32`** (FQBN `esp32:esp32:esp32`) und **`timer`** (NodeMCU) kompiliert.
+### Software setup (arduino-cli)
 
-- **Artefakte:** Unter **Actions** den Lauf öffnen → **Artifacts** → `firmware-esp32` bzw. `firmware-esp8266` herunterladen (ZIP mit **`.bin`**-Dateien).
-- **GitHub Release** läuft **nur bei einem Tag** `v*` (nicht bei jedem Push auf `main`). Normale Pushes erzeugen nur Artefakte — der Job „GitHub Release“ ist dann **Skipped**, das ist erwartet.
-- **Release anlegen:** Wenn du einen **Git-Tag** im Format **`v*`** pushst (z. B. `v1.0.0`), legt der Workflow nach erfolgreichem Build automatisch ein **Release** an und hängt **beide** `.bin`-Dateien an (Release Notes werden aus Commits generiert). Beispiel:
-  ```bash
-  git tag v1.0.0
-  git push origin v1.0.0
-  ```
-- Die **ESP32**-Hauptfirmware (z. B. `timer_esp32.ino.bin`) kannst du für **Web-OTA (`/update`)** oder USB verwenden — **Partitionsschema und Board** in der Workflow-Datei müssen zum **ersten** Flash auf dem Gerät passen (siehe Kommentar in der YAML).
-- **Kein automatischer Flash** am ESP — nur Build, Artefakte und optional Release.
+#### 1. Install arduino-cli
 
-Lokal denselben Build testen: [Arduino CLI](https://arduino.github.io/arduino-cli/) installieren und die Kommandos aus der Workflow-Datei nachvollziehen.
+```bash
+brew install arduino-cli
+```
 
-**Falls CI fehlschlägt:** ESP8266 steckt nicht im Standard-Index — die Workflow-Datei nutzt die offizielle **package-URL** der ESP8266-Community. ESP32 nutzt die **Espressif-URL**. Die CI kompiliert mit **FQBN** `esp32:esp32:esp32` (Board *ESP32 Dev Module* im aktuellen Core; ältere Anleitungen nennen noch `…:esp32dev`). Lokal in der IDE **dieselbe** Board-Auswahl und ein **passendes** Partitionsschema wählen (siehe Abschnitt Software & Bibliotheken).
+#### 2. Set up ESP32 board package
 
----
+```bash
+arduino-cli config init
+arduino-cli config add board_manager.additional_urls \
+  https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32@2.0.17
+```
 
-## Webinterface & lokaler Verlauf (nur ESP32, ohne Home Assistant)
+> Version 2.0.17 recommended — newer versions download a large RISC-V toolchain (>500 MB) not needed for the standard ESP32.
 
-### WLAN einrichten (ohne Sketch anpassen)
+#### 3. Install libraries
 
-Die **Zugangsdaten für dein Heim-WLAN** werden im **Flash (NVS)** gespeichert — du kannst sie **über den Browser** setzen oder ändern (`/wifi`).
+```bash
+arduino-cli lib install "Adafruit SSD1306" "Adafruit GFX Library" "PubSubClient"
+```
 
-1. **Erste Einrichtung (kein NVS, optional auch leerer `WIFI_SSID` im Sketch):**  
-   Der ESP startet einen **eigenen Access Point** **`MaraX-Timer`** (Passwort: **`CONFIG_AP_PASSWORD`** im Sketch, Standard z. B. `maraxsetup` — mindestens 8 Zeichen; sonst offenes AP).  
-   Mit dem Handy/PC **mit diesem WLAN verbinden**, Browser öffnen: **`http://192.168.4.1/`** (Router-IP des ESP im AP-Modus).
+#### 4. Compile
 
-2. **SSID und Passwort** deines Routers eintragen, speichern → Gerät startet neu und verbindet sich mit dem **Heim-WLAN**.
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32 timer_esp32/
+```
 
-3. **Falsches Passwort / Verbindung schlägt fehl:** Es erscheint wieder der **Konfig-AP** `MaraX-Timer` — erneut einrichten.
+#### 5. Flash (USB)
 
-4. **Später ändern:** Im Heimnetz **`http://<IP>/wifi`** oder **`http://marax.local/wifi`** (wenn mDNS funktioniert).
+```bash
+arduino-cli upload -p /dev/cu.usbserial-XXX \
+  --fqbn esp32:esp32:esp32:UploadSpeed=460800 timer_esp32/
+```
 
-5. **Priorität:** Zuerst wird gelesen, was in **NVS** steht; nur wenn dort noch **keine** SSID gespeichert ist, gelten die optionalen Konstanten **`WIFI_SSID`** / **`WIFI_PASSWORD`** im Sketch (z. B. für die erste USB-Flasheinstellung).
+On macOS check port with `ls /dev/cu.usb*`.  
+If you see `Unable to verify flash chip connection`: hold the BOOT button while upload starts, or reduce baud rate to `115200`.
 
-Nach erfolgreicher Verbindung: **NTP** (UTC), **HTTP-Server** Port **80**, optional **`http://marax.local/`** (mDNS).
+### Firmware update without a cable (OTA)
 
-- **Shot-History:** Jeder Lauf **≥ 15 Sekunden** → **LittleFS** (`shots.log`) mit Zeitstempel und optional HX/Dampf. **„Verlauf löschen“** auf der Startseite.
-- **API:** `GET /api/history`, `POST /api/clear`.
+Once the ESP32 has been flashed via USB and joined your WiFi, all further updates can be done wirelessly.
 
-**Hinweis:** Kein Login auf der Webseite — nur im vertrauenswürdigen Heimnetz nutzen. **Konfig-AP-Passwort** im Sketch ändern, wenn Nachbarn in Reichweite sind.
+**WiFi survives OTA:** The NVS partition is never overwritten — SSID, password, and all saved settings (pump mode, target values, AP state) are preserved after every update.
 
-### Firmware per Browser aktualisieren (OTA)
+#### Build the binary
 
-*(Welche `.bin` du genau brauchst und wie du neue Versionen erzeugst: Abschnitt **Build, Upload & neue Firmware-Versionen** oben.)*
+```bash
+arduino-cli compile \
+  --fqbn esp32:esp32:esp32 \
+  --export-binaries \
+  timer_esp32/
+# File: timer_esp32/build/esp32.esp32.esp32/timer_esp32.ino.bin
+```
 
-1. Im Sketch **`OTA_UPDATE_TOKEN`** setzen (beliebiges Passwort) und **einmal per USB** flashen — ohne Token ist **`/update`** gesperrt.
-2. Im Browser **`http://<IP>/update`** oder über den Link auf der Startseite öffnen.
-3. **Sketch → Kompiliertes Binary exportieren** → passende **`timer_esp32.ino.bin`** wählen.
-4. Token eingeben, hochladen; das Gerät startet neu.
+#### Upload in the browser
 
-**Hinweis:** Partitionsschema und App-Größe müssen zum ersten Flash passen; sonst schlägt das Update fehl. Im Heimnetz erfolgt die Übertragung **unverschlüsselt** (HTTP).
+1. Open **`http://marax.local/update`**
+2. Enter the **token** (`OTA_UPDATE_TOKEN` from the sketch, default: `maraxota`)
+3. **Choose file** → the `.bin` from the build step
+4. Click **Upload** → ESP32 reboots automatically
 
----
+#### GitHub Actions
 
-## MQTT & Home Assistant (nur ESP32)
+Every push to `main` triggers an automatic build. Pushing a tag `v*` creates a GitHub Release with the binary attached:
 
-WLAN muss **eingerichtet** sein (NVS oder Sketch), damit der ESP im Heimnetz ist. **`MQTT_BROKER`** im Sketch setzen — dann werden die MQTT-Topics publiziert, sobald **WLAN verbunden** ist.
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+```
 
-*(Reiner Offline-Betrieb ohne WLAN: den **ESP8266**-Sketch `timer/` nutzen oder Firmware ohne Konfig-AP — der ESP32-Build ist auf Netzwerkdienste ausgelegt.)*
+Artifacts: Actions → run → `firmware-esp32`
 
-**Topics** (kompatibel zur Idee von [alexander-heimbuch/marax_timer](https://github.com/alexander-heimbuch/marax_timer)):
+#### OTA troubleshooting
 
-- `/marax/power` — `on` / `off`
-- `/marax/pump` — `on` / `off`
-- `/marax/hx` — Brühkreis-Temperatur (Zahl als String)
-- `/marax/steam` — Dampf-Temperatur
-- `/marax/shot` — letzte Shot-Dauer in Sekunden (Logik wie im Referenzprojekt)
-- `/marax/machineheating` — `on` / `off`
-- `/marax/machineheatingboost` — `on` / `off`
+| Problem | Fix |
+|---------|-----|
+| `/update` shows "OTA disabled" | Set `OTA_UPDATE_TOKEN`, flash via USB |
+| Upload fails | Use only `timer_esp32.ino.bin`, not `bootloader.bin` |
+| Device unreachable after update | Try `http://marax.local/` or look up IP in router |
 
-YAML-Beispiele für Sensoren in **Home Assistant** und Mosquitto stehen in der README des verlinkten Repos — **Topic-Namen und Payloads** sind so gewählt, dass du diese Konfiguration übernehmen kannst.
+### Sketch configuration
 
----
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WIFI_SSID` / `WIFI_PASSWORD` | `""` | Optional: hardcode WiFi credentials (otherwise via browser) |
+| `CONFIG_AP_PASSWORD` | `"maraxsetup"` | Config AP password (min. 8 chars for WPA2) |
+| `OTA_UPDATE_TOKEN` | `""` | OTA token — empty disables OTA |
+| `MQTT_BROKER` | `""` | MQTT broker IP/hostname |
+| `reedOpenSensor` | `true` | `true` = NO sensor, `false` = NC sensor |
+| `SSD1306_I2C_ADDR` | `0x3C` | OLED I²C address |
 
-## Kalibrierung & Fehlersuche
+### Web interface (ESP32)
 
-- **Timer startet von allein oder reagiert nicht:** Reed-Typ oder Polarität passt nicht — `reedOpenSensor` im Sketch umstellen **oder** anderen Reed verwenden (NO/NC).
-- **Reed-Modul mit Trimmpoti:** Vorsichtig die Empfindlichkeit drehen, während die Maschine Strom hat (nicht übertreiben).
-- **Keine Mara X-Daten auf dem Display:** RX/TX zur Maschine **tauschen** (Pin 3/4 ↔ MCU-Pins wie in der Tabelle oben).
+Available at `http://marax.local/` or the ESP32's IP address.
 
----
+#### Pages
 
-## Bedienoberfläche (Beispiel)
+| URL | Function |
+|-----|----------|
+| `/` | Main page: live pump status, shot history, target settings |
+| `/test` | **Diagnostics:** reed, pump, temperatures, pump source, AP state, UART raw data |
+| `/temps` | Temperature graph (Canvas, 10 min history) |
+| `/wifi` | Change WiFi incl. **network scan with signal strength** |
+| `/update` | Browser firmware upload (OTA) — token required |
 
-![](resources/ui.jpg)
+#### API endpoints
 
----
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | JSON: pump, timer, reed, temps, pump source, AP state, demo |
+| `/api/history` | GET | JSON: shot history |
+| `/api/history.csv` | GET | CSV download of shot history |
+| `/api/temp-history` | GET | JSON: temperature ring buffer (120 samples × 5 s) |
+| `/api/wifi-scan` | GET | JSON: available networks with RSSI |
+| `/api/set-target` | POST | `shot=27&hx=93` — save target values |
+| `/api/set-pump-source` | POST | `source=reed` or `source=serial` — switch pump trigger |
+| `/api/set-ap` | POST | `enabled=1` or `enabled=0` — toggle fallback AP |
+| `/api/demo` | POST | Toggle demo mode |
+| `/api/clear` | POST | Clear shot history |
 
-## Lizenz & Quellen
+#### First-time WiFi setup
 
-Siehe [LICENSE](LICENSE) im Repository.
+1. ESP32 starts as access point **`MaraX-Timer`** (password: `maraxsetup`)
+2. Connect phone/PC → browser: `http://192.168.4.1/`
+3. Pick home WiFi from list, enter password, save
+4. ESP32 reboots — new IP from router DHCP or `http://marax.local/`
 
-- Ursprungsidee / Fork-Kette: [alexrus / espresso_timer](https://github.com/alexrus/espresso_timer)
-- MQTT-/HA-Ansatz: [alexander-heimbuch / marax_timer](https://github.com/alexander-heimbuch/marax_timer)
+### Switching pump source
 
----
+```bash
+# Switch to serial mode (no reed sensor needed)
+curl -X POST "http://marax.local/api/set-pump-source?source=serial"
 
-## Mehr Infos & Video
+# Switch back to reed
+curl -X POST "http://marax.local/api/set-pump-source?source=reed"
+```
 
-- Thread und Erfahrungswerte (Englisch): [Home-Barista — Lelit Mara X](https://www.home-barista.com/espresso-machines/lelit-marax-t61215-350.html#p723763)
-- YouTube (eingebunden ab gewähltem Zeitpunkt):  
-  [https://www.youtube.com/watch?v=e9FXYfr5ro4&t=526s](https://www.youtube.com/watch?v=e9FXYfr5ro4&t=526s)
+The setting is stored in NVS and survives OTA updates and reboots. Can also be toggled on the `/test` page.
+
+### Fallback AP
+
+The ESP32 runs its own WiFi hotspot (`MaraX-Timer`) alongside the home network, so diagnostics (`/test`) and OTA (`/update`) are always reachable — even if the home network is unavailable.
+
+| Situation | Behaviour |
+|-----------|-----------|
+| Home WiFi connected, AP on | `marax.local` **and** `192.168.4.1` reachable |
+| Home WiFi connected, AP off | Only `marax.local` |
+| Home WiFi unavailable | Config AP always starts automatically (cannot be disabled) |
+
+Toggle AP: `/test` → **"AP off/on"** button, or `POST /api/set-ap?enabled=0`.
+
+### MQTT / Home Assistant
+
+Set `MQTT_BROKER` in the sketch. Topics (compatible with [alexander-heimbuch/marax_timer](https://github.com/alexander-heimbuch/marax_timer)):
+
+| Topic | Values |
+|-------|--------|
+| `/marax/pump` | `on` / `off` |
+| `/marax/hx` | Temperature in °C |
+| `/marax/steam` | Temperature in °C |
+| `/marax/shot` | Duration in seconds |
+| `/marax/machineheating` | `on` / `off` |
+| `/marax/machineheatingboost` | `on` / `off` |
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Timer starts on its own | Set `reedOpenSensor = false` (NC sensor) |
+| Timer does not react | Set `reedOpenSensor = true` (NO sensor) |
+| Display stays blank | Check I²C address: `0x3C` or `0x3D` |
+| No Mara X data | Swap GPIO 12 and 14 |
+| Flash fails | Hold BOOT during upload, or baud rate `115200` |
+| Reed sensor too sensitive | Adjust the blue potentiometer on the sensor module |
+| Pump not detected in serial mode | Check UART raw data on `/test` — byte 25 must be `0` or `1` |
+
+### License & sources
+
+See [LICENSE](LICENSE).
+
+- [alexrus / espresso_timer](https://github.com/alexrus/espresso_timer)
+- [alexander-heimbuch / marax_timer](https://github.com/alexander-heimbuch/marax_timer)
+- [SaibotFlow / marax-monitor](https://github.com/SaibotFlow/marax-monitor) — serial protocol reference for pump state
+- [Home-Barista forum](https://www.home-barista.com/espresso-machines/lelit-marax-t61215-350.html#p723763)
+- [YouTube](https://www.youtube.com/watch?v=e9FXYfr5ro4&t=526s)

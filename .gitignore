@@ -1,2 +1,6 @@
 .DS_Store
 .history
+# Arduino / arduino-cli Build-Artefakte
+build/
+firmware-esp32/
+firmware-esp8266/

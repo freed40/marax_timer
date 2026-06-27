@@ -20,7 +20,7 @@
 #define OLED_RESET -1
 #define I2C_SDA 21
 #define I2C_SCL 22
-#define SSD1306_ADDR 0x3D
+#define SSD1306_ADDR 0x3C
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
