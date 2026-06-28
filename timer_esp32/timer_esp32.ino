@@ -68,7 +68,7 @@ const char *MQTT_PASSWORD = "";
 const char *OTA_UPDATE_TOKEN = "maraxota";
 
 // Muss mit VERSION im Repo-Root übereinstimmen — ./scripts/bump-version.sh
-#define FIRMWARE_VERSION "1.2.1"
+#define FIRMWARE_VERSION "1.2.2"
 static const char FIRMWARE_BUILT[] = __DATE__ " " __TIME__;
 #define GITHUB_REPO "freed40/marax_timer"
 
